@@ -84,40 +84,42 @@ async def link_downloader_handler(client: Client, message: Message):
         )
 
     status_msg = await message.reply_text("🔍 **Analyzing your link...**", quote=True)
-
-    direct_url = url
-    filename = None
-
-    if is_terabox_link(url):
-        cookie_val = Config.TERABOX_COOKIE.strip()
-        if cookie_val.endswith("...") or cookie_val.endswith("…"):
-            return await status_msg.edit_text(
-                "❌ **आपका TERABOX_COOKIE अधूरा (Truncated) है!**\n\n"
-                "Render Environment Variables में आपकी कुकी के अंत में `...` लगा हुआ है।\n"
-                "ब्राउज़र DevTools में `ndus` पर **Right Click > Copy Value** करके पूरा 44-अक्षर का कोड कॉपी करें और Render में पेस्ट करके सेव करें।"
-            )
-
-        await status_msg.edit_text("⚡ **Resolving Terabox link...** Please wait.")
-        resolved = await resolve_terabox_link(url)
-        if not resolved or not resolved.get("direct_url"):
-            return await status_msg.edit_text(
-                "❌ **Terabox Link Resolve नहीं हो सका!**\n\n"
-                "**संभावित कारण:**\n"
-                "1. यह लिंक Terabox द्वारा लॉक या रिमूव कर दिया गया है।\n"
-                "2. Render में आपका **TERABOX_COOKIE** एक्सपायर हो चुका है।\n\n"
-                "💡 **समाधान:** अपने Terabox अकाउंट से नया `ndus` कुकी लेकर Render के Environment Variables में **TERABOX_COOKIE** अपडेट करें।"
-            )
-        direct_url = resolved["direct_url"]
-        filename = resolved.get("filename") or "video.mp4"
-    else:
-        filename = get_filename_from_url(url)
-
-    filename = re.sub(r'[\\/*?:"<>|]', "_", filename)
-    os.makedirs(Config.DOWNLOAD_DIR, exist_ok=True)
-    temp_download_path = os.path.join(Config.DOWNLOAD_DIR, f"{user_id}_{int(time.time())}_{filename}")
+    temp_download_path = None
     temp_thumb_path = None
 
     try:
+        direct_url = url
+        filename = None
+
+        if is_terabox_link(url):
+            cookie_val = getattr(Config, "TERABOX_COOKIE", os.getenv("TERABOX_COOKIE", "")).strip()
+            if cookie_val.endswith("...") or cookie_val.endswith("…"):
+                return await status_msg.edit_text(
+                    "❌ **आपका TERABOX_COOKIE अधूरा (Truncated) है!**\n\n"
+                    "Render Environment Variables में आपकी कुकी के अंत में `...` लगा हुआ है।\n"
+                    "ब्राउज़र DevTools में `ndus` पर **Right Click > Copy Value** करके पूरा 44-अक्षर का कोड कॉपी करें और Render में पेस्ट करके सेव करें।"
+                )
+
+            await status_msg.edit_text("⚡ **Resolving Terabox link...** Please wait.")
+            resolved = await resolve_terabox_link(url)
+            if not resolved or not resolved.get("direct_url"):
+                return await status_msg.edit_text(
+                    "❌ **Terabox Link Resolve नहीं हो सका!**\n\n"
+                    "**संभावित कारण:**\n"
+                    "1. यह लिंक Terabox द्वारा लॉक या रिमूव कर दिया गया है।\n"
+                    "2. Render में आपका **TERABOX_COOKIE** एक्सपायर हो चुका है।\n\n"
+                    "💡 **समाधान:** अपने Terabox अकाउंट से नया `ndus` कुकी लेकर Render के Environment Variables में **TERABOX_COOKIE** अपडेट करें।"
+                )
+            direct_url = resolved["direct_url"]
+            filename = resolved.get("filename") or "video.mp4"
+        else:
+            filename = get_filename_from_url(url)
+
+        filename = re.sub(r'[\\/*?:"<>|]', "_", filename)
+        download_dir = getattr(Config, "DOWNLOAD_DIR", "downloads")
+        os.makedirs(download_dir, exist_ok=True)
+        temp_download_path = os.path.join(download_dir, f"{user_id}_{int(time.time())}_{filename}")
+
         await status_msg.edit_text("📥 **Starting High-Speed Download...**")
         await download_file_with_progress(direct_url, temp_download_path, status_msg, time.time())
         
@@ -125,7 +127,8 @@ async def link_downloader_handler(client: Client, message: Message):
             return await status_msg.edit_text("❌ Download failed. The file could not be retrieved.")
 
         actual_size = os.path.getsize(temp_download_path)
-        if actual_size > Config.MAX_FILE_SIZE:
+        max_size = getattr(Config, "MAX_FILE_SIZE", 2 * 1024 * 1024 * 1024)
+        if actual_size > max_size:
             return await status_msg.edit_text(
                 f"❌ **File too large!**\n"
                 f"File size is `{humanbytes(actual_size)}`. Telegram allows maximum 2 GB for bots."
@@ -196,7 +199,7 @@ async def link_downloader_handler(client: Client, message: Message):
             pass
 
     finally:
-        if os.path.exists(temp_download_path):
+        if temp_download_path and os.path.exists(temp_download_path):
             try:
                 os.remove(temp_download_path)
             except Exception:
