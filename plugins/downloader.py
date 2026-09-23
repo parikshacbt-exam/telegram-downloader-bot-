@@ -46,13 +46,20 @@ def get_video_metadata(video_path: str):
         logger.debug(f"Metadata extraction error: {e}")
     return duration, width, height
 
-async def auto_delete_task(client: Client, chat_id: int, message_ids: list, delay: int = 1800):
+async def auto_delete_and_notify(client: Client, chat_id: int, video_message_id: int, delay: int = 1800):
     await asyncio.sleep(delay)
-    for msg_id in message_ids:
-        try:
-            await client.delete_messages(chat_id, msg_id)
-        except Exception:
-            pass
+    try:
+        await client.delete_messages(chat_id, video_message_id)
+    except Exception as e:
+        logger.debug(f"Could not delete message {video_message_id}: {e}")
+
+    try:
+        await client.send_message(
+            chat_id=chat_id,
+            text="⚠️ **Telegram Regulations Notice:**\n\nयह वीडियो / फ़ाइल Telegram कम्युनिटी गाइडलाइन्स व कॉपीराइट नियमों के तहत 30 मिनट पूरे होने पर चैट से हटा दी गई है।"
+        )
+    except Exception as e:
+        logger.debug(f"Could not send delete notice: {e}")
 
 @Client.on_message(filters.regex(r"https?://[^\s]+") & filters.private)
 async def link_downloader_handler(client: Client, message: Message):
@@ -77,7 +84,8 @@ async def link_downloader_handler(client: Client, message: Message):
         if not resolved or not resolved.get("direct_url"):
             return await status_msg.edit_text(
                 "❌ **Failed to resolve Terabox link.**\n\n"
-                "The link might be expired, private, or temporarily unreachable. Please try again."
+                "Terabox is blocking anonymous access for this link.\n"
+                "Please configure your **TERABOX_COOKIE** in Render Environment Variables to enable permanent full-speed 1GB+ downloads without login!"
             )
         direct_url = resolved["direct_url"]
         filename = resolved.get("filename") or "video.mp4"
@@ -157,18 +165,13 @@ async def link_downloader_handler(client: Client, message: Message):
         except Exception:
             pass
 
-        notice_text = (
-            "⚠️ **Telegram Regulations Notice:**\n\n"
-            "This video/file will be **automatically deleted in 30 minutes** to comply with Telegram copyright & community regulations.\n\n"
-            "📥 **Please forward or save this to your 'Saved Messages' immediately!**"
-        )
-        notice_msg = await message.reply_text(notice_text, quote=True)
-        asyncio.create_task(auto_delete_task(client, message.chat.id, [sent_media.id, notice_msg.id], delay=1800))
+        # 30 minute auto-delete: Deletes video after 30 minutes, then posts regulation message
+        asyncio.create_task(auto_delete_and_notify(client, message.chat.id, sent_media.id, delay=1800))
 
     except Exception as e:
         logger.error(f"Downloader error: {e}")
         try:
-            await status_msg.edit_text(f"❌ **Error occurred:** `{e}`")
+            await status_msg.edit_text(f"❌ **Error:** `{e}`")
         except Exception:
             pass
 
