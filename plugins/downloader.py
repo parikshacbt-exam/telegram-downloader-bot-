@@ -10,7 +10,8 @@ from config import Config
 from database import db
 from utils.force_sub import is_subscribed, send_force_sub_message
 from utils.progress import progress_for_pyrogram, humanbytes
-from utils.terabox import is_terabox_link, resolve_terabox_link, download_file_with_progress
+from utils.terabox import is_terabox_link, extract_terabox_surl, resolve_terabox_link, download_file_with_progress
+from utils.ytdl import download_with_ytdl
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ def get_filename_from_url(url: str) -> str:
     clean_path = urllib.parse.unquote(parsed.path)
     name = os.path.basename(clean_path)
     if not name or "." not in name:
-        name = f"video_{int(time.time())}.mp4"
+        name = f"file_{int(time.time())}.mp4"
     return re.sub(r'[\\/*?:"<>|]', "_", name)
 
 def get_video_metadata(video_path: str):
@@ -74,24 +75,29 @@ async def link_downloader_handler(client: Client, message: Message):
         return
 
     url = match.group(0).strip()
-
-    if url.endswith("...") or url.endswith("…"):
-        return await message.reply_text(
-            "⚠️ **अधूरा लिंक मिला (Truncated Link)!**\n\n"
-            "आपने जो लिंक भेजा है उसके अंत में `...` लगा हुआ है।\n"
-            "कृपया Telegram चैनल में लिंक पर लॉन्ग-प्रेस करके **'Copy Link'** चुनें और पूरा सही लिंक भेजें।",
-            quote=True
-        )
-
     status_msg = await message.reply_text("🔍 **Analyzing your link...**", quote=True)
+    
     temp_download_path = None
     temp_thumb_path = None
+    download_dir = getattr(Config, "DOWNLOAD_DIR", "downloads")
+    os.makedirs(download_dir, exist_ok=True)
 
     try:
-        direct_url = url
-        filename = None
-
+        # 1. TERABOX LINKS
         if is_terabox_link(url):
+            surl = extract_terabox_surl(url)
+            
+            if url.endswith("...") or url.endswith("…") or (surl and len(surl) < 18):
+                return await status_msg.edit_text(
+                    "⚠️ **अधूरा Terabox लिंक (Incomplete Link)!**\n\n"
+                    f"आपने जो लिंक भेजा है उसके अंत में `...` है:\n`{url}`\n\n"
+                    "चैनल पोस्ट में टेक्स्ट छोटा होने की वजह से लिंक कट गया है।\n\n"
+                    "💡 **समाधान (10 सेकंड में):**\n"
+                    "1. उस लिंक पर क्लिक करके ब्राउज़र (Chrome) में खोलें।\n"
+                    "2. ब्राउज़र के एड्रेस बार से **पूरा असली लिंक** कॉपी करें।\n"
+                    "3. वह लिंक यहाँ बॉट में भेजें, तुरंत डाउनलोड शुरू हो जाएगा!"
+                )
+
             cookie_val = getattr(Config, "TERABOX_COOKIE", os.getenv("TERABOX_COOKIE", "")).strip()
             if cookie_val.endswith("...") or cookie_val.endswith("…"):
                 return await status_msg.edit_text(
@@ -106,24 +112,48 @@ async def link_downloader_handler(client: Client, message: Message):
                 return await status_msg.edit_text(
                     "❌ **Terabox Link Resolve नहीं हो सका!**\n\n"
                     "**संभावित कारण:**\n"
-                    "1. यह लिंक Terabox द्वारा लॉक या रिमूव कर दिया गया है।\n"
+                    "1. यह लिंक Terabox द्वारा हटा दिया गया है या लॉक है।\n"
                     "2. Render में आपका **TERABOX_COOKIE** एक्सपायर हो चुका है।\n\n"
                     "💡 **समाधान:** अपने Terabox अकाउंट से नया `ndus` कुकी लेकर Render के Environment Variables में **TERABOX_COOKIE** अपडेट करें।"
                 )
+
             direct_url = resolved["direct_url"]
             filename = resolved.get("filename") or "video.mp4"
+            filename = re.sub(r'[\\/*?:"<>|]', "_", filename)
+            temp_download_path = os.path.join(download_dir, f"{user_id}_{int(time.time())}_{filename}")
+
+            await status_msg.edit_text("📥 **Starting High-Speed Download...**")
+            await download_file_with_progress(direct_url, temp_download_path, status_msg, time.time())
+            video_duration, video_width, video_height = get_video_metadata(temp_download_path)
+
+        # 2. ALL OTHER VIDEOS (YouTube, Instagram, Adult sites, etc.)
         else:
-            filename = get_filename_from_url(url)
+            await status_msg.edit_text("⚡ **Fetching video stream information...**")
+            ytdl_success = False
+            video_duration = 0
+            video_width = 0
+            video_height = 0
 
-        filename = re.sub(r'[\\/*?:"<>|]', "_", filename)
-        download_dir = getattr(Config, "DOWNLOAD_DIR", "downloads")
-        os.makedirs(download_dir, exist_ok=True)
-        temp_download_path = os.path.join(download_dir, f"{user_id}_{int(time.time())}_{filename}")
+            try:
+                ytdl_res = await download_with_ytdl(url, download_dir, status_msg, time.time())
+                temp_download_path = ytdl_res["filepath"]
+                filename = os.path.basename(temp_download_path)
+                video_duration = ytdl_res["duration"]
+                video_width = ytdl_res["width"]
+                video_height = ytdl_res["height"]
+                ytdl_success = True
+            except Exception as ytdl_err:
+                logger.debug(f"yt-dlp fallback error: {ytdl_err}")
 
-        await status_msg.edit_text("📥 **Starting High-Speed Download...**")
-        await download_file_with_progress(direct_url, temp_download_path, status_msg, time.time())
-        
-        if not os.path.exists(temp_download_path):
+            if not ytdl_success:
+                filename = get_filename_from_url(url)
+                temp_download_path = os.path.join(download_dir, f"{user_id}_{int(time.time())}_{filename}")
+                await status_msg.edit_text("📥 **Starting Direct File Download...**")
+                await download_file_with_progress(url, temp_download_path, status_msg, time.time())
+                video_duration, video_width, video_height = get_video_metadata(temp_download_path)
+
+        # 3. UPLOAD TO TELEGRAM
+        if not temp_download_path or not os.path.exists(temp_download_path):
             return await status_msg.edit_text("❌ Download failed. The file could not be retrieved.")
 
         actual_size = os.path.getsize(temp_download_path)
@@ -154,7 +184,6 @@ async def link_downloader_handler(client: Client, message: Message):
 
         upload_start = time.time()
         file_ext = os.path.splitext(filename)[1].lower()
-        duration, width, height = get_video_metadata(temp_download_path)
 
         if file_ext in VIDEO_EXTENSIONS:
             await status_msg.edit_text("📤 **Preparing high-speed video stream upload...**")
@@ -163,9 +192,9 @@ async def link_downloader_handler(client: Client, message: Message):
                 video=temp_download_path,
                 caption=caption,
                 thumb=temp_thumb_path,
-                duration=duration,
-                width=width,
-                height=height,
+                duration=video_duration,
+                width=video_width,
+                height=video_height,
                 supports_streaming=True,
                 reply_to_message_id=message.id,
                 progress=progress_for_pyrogram,
