@@ -51,6 +51,7 @@ async def start_bot():
         print("="*60 + "\n")
         return
 
+    os.makedirs(Config.DOWNLOAD_DIR, exist_ok=True)
     logger.info("Starting Telegram Bot Client (Pure Bot Token Mode)...")
     bot = Client(
         name="FileDownloaderBot",
@@ -58,7 +59,7 @@ async def start_bot():
         api_hash=Config.API_HASH,
         bot_token=Config.BOT_TOKEN,
         plugins=dict(root="plugins"),
-        workdir="downloads"
+        in_memory=True
     )
 
     await bot.start()
