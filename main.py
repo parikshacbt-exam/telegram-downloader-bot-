@@ -9,6 +9,7 @@ except RuntimeError:
     asyncio.set_event_loop(loop)
 
 from pyrogram import Client, idle
+from pyrogram.errors import FloodWait
 from config import Config
 from database import db
 
@@ -29,15 +30,23 @@ async def main():
     await db.init()
     os.makedirs(Config.DOWNLOAD_DIR, exist_ok=True)
     await run_web()
+
     bot = Client(
-        "bot",
+        "bot_session",
         api_id=Config.API_ID,
         api_hash=Config.API_HASH,
         bot_token=Config.BOT_TOKEN,
-        plugins=dict(root="plugins"),
-        in_memory=True
+        plugins=dict(root="plugins")
     )
-    await bot.start()
+
+    while True:
+        try:
+            await bot.start()
+            break
+        except FloodWait as e:
+            logger.warning(f"Telegram FloodWait on login: sleeping for {e.value + 5}s...")
+            await asyncio.sleep(e.value + 5)
+
     me = await bot.get_me()
     logger.info(f"Bot started successfully as @{me.username}")
     await idle()
