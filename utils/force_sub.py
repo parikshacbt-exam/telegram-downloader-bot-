@@ -42,13 +42,19 @@ async def is_subscribed(client, user_id: int) -> bool:
 
     try:
         member = await client.get_chat_member(channel, user_id)
-        if member.status in ["creator", "administrator", "member", "restricted"]:
-            return True
-        return False
+        status_str = str(member.status).lower().split(".")[-1]
+        
+        # If user left or was banned, they are not subscribed
+        if status_str in ["left", "banned", "kicked"]:
+            return False
+        
+        # All other statuses (owner, creator, administrator, member, restricted) -> SUBSCRIBED
+        return True
     except UserNotParticipant:
         return False
     except Exception as e:
-        logger.warning(f"Force Sub check bypassed for user {user_id}: {e}")
+        logger.warning(f"Force Sub check bypassed for user {user_id} due to error: {e}")
+        # If bot is not admin or channel is misconfigured, never block users
         return True
 
 async def send_force_sub_message(client, message):
@@ -60,7 +66,7 @@ async def send_force_sub_message(client, message):
 
     invite_link = await get_invite_link(client, channel)
     if not invite_link:
-        if isinstance(channel, str) and not channel.startswith("-"):
+        if isinstance(channel, str) and not str(channel).startswith("-"):
             invite_link = f"https://t.me/{channel}"
         else:
             invite_link = "https://t.me"
