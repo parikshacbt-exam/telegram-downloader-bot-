@@ -13,101 +13,133 @@ logger = logging.getLogger(__name__)
 TERABOX_DOMAINS = [
     "terabox.com", "teraboxapp.com", "1024tera.com", "teraboxshare.com",
     "4funbox.com", "mirrobox.com", "nephobox.com", "freeterabox.com",
-    "1024terabox.com", "terasharelink.com"
+    "1024terabox.com", "terasharelink.com", "terabox.app", "teraboxlink.com"
 ]
 
 def is_terabox_link(url: str) -> bool:
-    """Check if the provided link is a Terabox domain link"""
     parsed = urllib.parse.urlparse(url)
     domain = parsed.netloc.lower()
     return any(d in domain for d in TERABOX_DOMAINS)
 
 def is_diskwala_link(url: str) -> bool:
-    """Check if the provided link is Diskwala"""
     parsed = urllib.parse.urlparse(url)
     domain = parsed.netloc.lower()
     return "diskwala" in domain
 
-async def resolve_terabox_link(url: str):
-    """
-    Resolve Terabox link to extract direct downloadable stream URL, filename, and size.
-    Uses API resolver with robust fallbacks.
-    """
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
+def extract_terabox_surl(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    qs = urllib.parse.parse_qs(parsed.query)
+    surl = qs.get("surl", [""])[0]
+    if not surl and "/s/" in parsed.path:
+        surl = parsed.path.split("/s/")[1].split("/")[0].split("?")[0]
+    elif not surl and "/sharing/link" in parsed.path and "surl=" in parsed.query:
+        surl = qs.get("surl", [""])[0]
+    elif not surl:
+        surl = parsed.path.strip("/").split("/")[-1]
     
-    # Try configured API endpoint
-    api_url = Config.TERABOX_API_URL
-    params = {"url": url}
-    
-    async with aiohttp.ClientSession(headers=headers) as session:
-        try:
-            async with session.get(api_url, params=params, timeout=aiohttp.ClientTimeout(total=25)) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    # Handle common API response schemas
-                    # Schema 1: {"download_url": ..., "file_name": ..., "size": ...}
-                    # Schema 2: {"status": "success", "result": [{"url": ..., "title": ...}]}
-                    if isinstance(data, dict):
-                        if "download_url" in data:
-                            return {
-                                "direct_url": data["download_url"],
-                                "filename": data.get("file_name", "video.mp4"),
-                                "size": data.get("size", 0)
-                            }
-                        elif "response" in data and isinstance(data["response"], list) and len(data["response"]) > 0:
-                            item = data["response"][0]
-                            return {
-                                "direct_url": item.get("resolutions", {}).get("Fast Download") or item.get("download_link"),
-                                "filename": item.get("title", "video.mp4"),
-                                "size": item.get("size", 0)
-                            }
-                        elif "url" in data:
-                            return {
-                                "direct_url": data["url"],
-                                "filename": data.get("filename", data.get("title", "downloaded_file.mp4")),
-                                "size": data.get("size", 0)
-                            }
-        except Exception as e:
-            logger.warning(f"Resolver {api_url} failed: {e}")
+    if surl.startswith("1"):
+        surl = surl[1:]
+    return surl.strip()
 
-        # Secondary fallback public resolver
-        fallback_api = f"https://terabox-dl.qtcloud.workers.dev/api/get-info?shorturl={url.split('/')[-1]}"
-        try:
-            async with session.get(fallback_api, timeout=aiohttp.ClientTimeout(total=20)) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    if "download_link" in data:
-                        return {
-                            "direct_url": data["download_link"],
-                            "filename": data.get("filename", "video.mp4"),
-                            "size": data.get("size", 0)
-                        }
-        except Exception as e:
-            logger.warning(f"Fallback resolver failed: {e}")
+async def resolve_terabox_link(url: str):
+    surl = extract_terabox_surl(url)
+    if not surl:
+        return None
+
+    cookie_str = Config.TERABOX_COOKIE.strip()
+    if cookie_str and "ndus=" not in cookie_str:
+        cookie_str = f"ndus={cookie_str}"
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Referer": "https://www.terabox.app/"
+    }
+    if cookie_str:
+        headers["Cookie"] = cookie_str
+
+    async with aiohttp.ClientSession(headers=headers) as session:
+        if cookie_str:
+            api_url = f"https://www.terabox.app/share/list?app_id=250528&shorturl={surl}&root=1"
+            try:
+                async with session.get(api_url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data.get("errno") == 0 and data.get("list"):
+                            file_item = data["list"][0]
+                            dlink = file_item.get("dlink")
+                            if dlink:
+                                return {
+                                    "direct_url": dlink,
+                                    "filename": file_item.get("server_filename", "video.mp4"),
+                                    "size": int(file_item.get("size", 0))
+                                }
+            except Exception as e:
+                logger.warning(f"Terabox official API failed: {e}")
+
+        worker_urls = [
+            f"https://tbx-proxy.shakir-ansarii075.workers.dev/?mode=resolve&surl={surl}&raw=1",
+            f"https://terabox-dl.qtcloud.workers.dev/api/get-info?shorturl={surl}"
+        ]
+
+        for w_url in worker_urls:
+            try:
+                async with session.get(w_url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if isinstance(data, dict):
+                            if "list" in data and len(data["list"]) > 0:
+                                f = data["list"][0]
+                                if f.get("dlink"):
+                                    return {
+                                        "direct_url": f["dlink"],
+                                        "filename": f.get("server_filename", "video.mp4"),
+                                        "size": int(f.get("size", 0))
+                                    }
+                            elif "download_link" in data:
+                                return {
+                                    "direct_url": data["download_link"],
+                                    "filename": data.get("filename", "video.mp4"),
+                                    "size": int(data.get("size", 0))
+                                }
+                            elif "download_url" in data:
+                                return {
+                                    "direct_url": data["download_url"],
+                                    "filename": data.get("file_name", "video.mp4"),
+                                    "size": int(data.get("size", 0))
+                                }
+            except Exception:
+                pass
 
     return None
 
 async def download_file_with_progress(url: str, dest_path: str, status_msg, start_time):
-    """
-    Download a remote stream/file to local disk with live progress updates.
-    """
+    cookie_str = Config.TERABOX_COOKIE.strip()
+    if cookie_str and "ndus=" not in cookie_str:
+        cookie_str = f"ndus={cookie_str}"
+
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Referer": "https://www.terabox.app/"
     }
+    if cookie_str:
+        headers["Cookie"] = cookie_str
 
     async with aiohttp.ClientSession(headers=headers) as session:
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=3600)) as response:
             if response.status != 200:
                 raise Exception(f"HTTP Error {response.status} while downloading file.")
 
+            content_type = response.headers.get("content-type", "").lower()
+            if "text/html" in content_type:
+                raise Exception("Terabox returned an HTML error/login page. Please configure your TERABOX_COOKIE.")
+
             total_size = int(response.headers.get("content-length", 0))
             if total_size > Config.MAX_FILE_SIZE:
-                raise Exception(f"File size ({total_size} bytes) exceeds Telegram's 2 GB limit.")
+                raise Exception(f"File size exceeds Telegram's 2 GB limit.")
 
             downloaded = 0
-            chunk_size = 1024 * 512  # 512 KB chunks
+            chunk_size = 1024 * 1024
 
             os.makedirs(os.path.dirname(dest_path), exist_ok=True)
             async with aiofiles.open(dest_path, "wb") as f:
@@ -122,5 +154,11 @@ async def download_file_with_progress(url: str, dest_path: str, status_msg, star
                             status_msg,
                             start_time
                         )
+
+    if os.path.exists(dest_path):
+        actual_size = os.path.getsize(dest_path)
+        if actual_size < 50 * 1024:
+            os.remove(dest_path)
+            raise Exception("Terabox blocked the download (Login required). Please add your TERABOX_COOKIE in Render Environment Variables.")
 
     return dest_path
