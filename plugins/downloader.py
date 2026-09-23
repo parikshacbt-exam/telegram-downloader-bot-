@@ -47,6 +47,7 @@ def get_video_metadata(video_path: str):
     return duration, width, height
 
 async def auto_delete_and_notify(client: Client, chat_id: int, video_message_id: int, delay: int = 1800):
+    """Wait for 30 minutes, delete video, and send regulation notice without quoting/tagging"""
     await asyncio.sleep(delay)
     try:
         await client.delete_messages(chat_id, video_message_id)
@@ -72,20 +73,39 @@ async def link_downloader_handler(client: Client, message: Message):
     if not match:
         return
 
-    url = match.group(0)
+    url = match.group(0).strip()
+
+    if url.endswith("...") or url.endswith("…"):
+        return await message.reply_text(
+            "⚠️ **अधूरा लिंक मिला (Truncated Link)!**\n\n"
+            "आपने जो लिंक भेजा है उसके अंत में `...` लगा हुआ है।\n"
+            "कृपया Telegram चैनल में लिंक पर लॉन्ग-प्रेस करके **'Copy Link'** चुनें और पूरा सही लिंक भेजें।",
+            quote=True
+        )
+
     status_msg = await message.reply_text("🔍 **Analyzing your link...**", quote=True)
 
     direct_url = url
     filename = None
 
     if is_terabox_link(url):
+        cookie_val = Config.TERABOX_COOKIE.strip()
+        if cookie_val.endswith("...") or cookie_val.endswith("…"):
+            return await status_msg.edit_text(
+                "❌ **आपका TERABOX_COOKIE अधूरा (Truncated) है!**\n\n"
+                "Render Environment Variables में आपकी कुकी के अंत में `...` लगा हुआ है।\n"
+                "ब्राउज़र DevTools में `ndus` पर **Right Click > Copy Value** करके पूरा 44-अक्षर का कोड कॉपी करें और Render में पेस्ट करके सेव करें।"
+            )
+
         await status_msg.edit_text("⚡ **Resolving Terabox link...** Please wait.")
         resolved = await resolve_terabox_link(url)
         if not resolved or not resolved.get("direct_url"):
             return await status_msg.edit_text(
-                "❌ **Failed to resolve Terabox link.**\n\n"
-                "Terabox is blocking anonymous access for this link.\n"
-                "Please configure your **TERABOX_COOKIE** in Render Environment Variables to enable permanent full-speed 1GB+ downloads without login!"
+                "❌ **Terabox Link Resolve नहीं हो सका!**\n\n"
+                "**संभावित कारण:**\n"
+                "1. यह लिंक Terabox द्वारा लॉक या रिमूव कर दिया गया है।\n"
+                "2. Render में आपका **TERABOX_COOKIE** एक्सपायर हो चुका है।\n\n"
+                "💡 **समाधान:** अपने Terabox अकाउंट से नया `ndus` कुकी लेकर Render के Environment Variables में **TERABOX_COOKIE** अपडेट करें।"
             )
         direct_url = resolved["direct_url"]
         filename = resolved.get("filename") or "video.mp4"
@@ -165,7 +185,7 @@ async def link_downloader_handler(client: Client, message: Message):
         except Exception:
             pass
 
-        # 30 minute auto-delete: Deletes video after 30 minutes, then posts regulation message
+        # 30 मिनट बाद वीडियो डिलीट और बिना किसी टैग के रेगुलेशन नोटिस भेजना
         asyncio.create_task(auto_delete_and_notify(client, message.chat.id, sent_media.id, delay=1800))
 
     except Exception as e:
