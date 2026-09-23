@@ -1,9 +1,24 @@
 import logging
-from pyrogram.errors import UserNotParticipant, ChatAdminRequired
+from pyrogram.errors import UserNotParticipant
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import Config
 
 logger = logging.getLogger(__name__)
+
+def clean_channel_input(channel_raw):
+    """Clean channel input: handles IDs, @username, or https://t.me/username"""
+    if not channel_raw:
+        return None
+    val = str(channel_raw).strip()
+    if val.startswith("-100") or val.startswith("-") or (val.isdigit() and len(val) > 5):
+        try:
+            return int(val)
+        except ValueError:
+            pass
+    if "t.me/" in val:
+        val = val.split("t.me/")[-1].split("/")[0].split("?")[0]
+    val = val.lstrip("@").strip()
+    return val if val else None
 
 async def get_invite_link(client, channel_id):
     """Retrieve or export an invite link for the force sub channel"""
@@ -20,16 +35,10 @@ async def get_invite_link(client, channel_id):
 
 async def is_subscribed(client, user_id: int) -> bool:
     """Check if user has joined the force subscribe channel"""
-    if not Config.FORCE_SUB_CHANNEL:
+    raw_channel = getattr(Config, "FORCE_SUB_CHANNEL", "")
+    channel = clean_channel_input(raw_channel)
+    if not channel:
         return True
-
-    channel = Config.FORCE_SUB_CHANNEL
-    # Try converting to int if it's an ID
-    try:
-        if channel.startswith("-100") or channel.startswith("-") or channel.isdigit():
-            channel = int(channel)
-    except ValueError:
-        pass
 
     try:
         member = await client.get_chat_member(channel, user_id)
@@ -39,23 +48,20 @@ async def is_subscribed(client, user_id: int) -> bool:
     except UserNotParticipant:
         return False
     except Exception as e:
-        logger.warning(f"Force Sub check failed for user {user_id}: {e}")
-        # If bot is not admin or channel is invalid, do not block user
+        logger.warning(f"Force Sub check bypassed for user {user_id}: {e}")
         return True
 
 async def send_force_sub_message(client, message):
     """Send Force Subscribe requirement message with Join & Try Again buttons"""
-    channel = Config.FORCE_SUB_CHANNEL
-    try:
-        if channel.startswith("-100") or channel.startswith("-") or channel.isdigit():
-            channel = int(channel)
-    except ValueError:
-        pass
+    raw_channel = getattr(Config, "FORCE_SUB_CHANNEL", "")
+    channel = clean_channel_input(raw_channel)
+    if not channel:
+        return True
 
     invite_link = await get_invite_link(client, channel)
     if not invite_link:
         if isinstance(channel, str) and not channel.startswith("-"):
-            invite_link = f"https://t.me/{channel.lstrip('@')}"
+            invite_link = f"https://t.me/{channel}"
         else:
             invite_link = "https://t.me"
 
