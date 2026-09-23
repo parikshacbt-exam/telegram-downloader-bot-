@@ -1,5 +1,14 @@
-import os
+import sys
 import asyncio
+
+# Fix for Python 3.10+ / 3.12 / 3.14 where asyncio requires explicit event loop on thread
+try:
+    loop = asyncio.get_event_loop()
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+import os
 import logging
 from aiohttp import web
 from pyrogram import Client, idle
