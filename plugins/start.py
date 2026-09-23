@@ -1,7 +1,7 @@
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from database import db
-from utils.force_sub import is_subscribed, send_force_sub_message
+from utils.force_sub import is_subscribed, send_force_sub_message, clean_channel_input
 from config import Config
 
 START_TEXT = """
@@ -11,7 +11,8 @@ Welcome to the **High-Speed File & Video Downloader Bot**! 🚀
 
 I can download and send files directly to you from:
 🔹 **Terabox** links
-🔹 **Diskwala** links
+🔹 **YouTube, Instagram, Facebook, Twitter**
+🔹 **All Adult / 18+ video platforms**
 🔹 **Direct File / Video URLs** (up to 2 GB!)
 
 ✨ **Key Features:**
@@ -27,33 +28,29 @@ HELP_TEXT = """
 📖 **How to Use this Bot:**
 
 1️⃣ **Download Files / Videos:**
-• Just copy your Terabox or direct download link and send it directly in this chat.
-• The bot will instantly fetch and upload the file with a live progress bar.
+• Just copy any Terabox, YouTube, Insta, or direct link and send it here.
+• The bot will fetch and upload the file with live progress.
 
 2️⃣ **Custom Thumbnail:**
-• Send any photo to the bot to set it as your permanent custom thumbnail for videos.
-• `/view_thumb` - View your saved thumbnail.
-• `/del_thumb` - Delete your custom thumbnail.
+• Send any photo to the bot to set it as your thumbnail for videos.
+• `/view_thumb` - View your thumbnail.
+• `/del_thumb` - Delete thumbnail.
 
 3️⃣ **Custom Caption:**
-• `/set_caption [Your Caption]` - Set your custom caption.
-  _Available tags:_ `{filename}`, `{filesize}`
-• `/view_caption` - View your current caption.
-• `/del_caption` - Delete your custom caption.
-
-4️⃣ **Need Help?**
-• Contact bot admin if you face any issues.
+• `/set_caption [Your Caption]` - Set custom caption.
+  _Tags:_ `{filename}`, `{filesize}`
+• `/view_caption` - View caption.
+• `/del_caption` - Delete caption.
 """
 
 ABOUT_TEXT = """
 🤖 **About This Bot:**
 
 • **Bot Name:** File & Video Downloader
-• **Language:** Python 3.12+
-• **Framework:** Pyrogram MTProto (up to 2GB)
-• **Database:** Persistent MongoDB / SQLite
-• **Hosting:** 24/7 Cloud Ready (Render / Koyeb)
-• **Version:** v2.0.0
+• **Engine:** Pyrogram MTProto + TeraboxDL + yt-dlp
+• **Database:** MongoDB / SQLite
+• **Hosting:** 24/7 Cloud Ready
+• **Version:** v2.5.0
 """
 
 def get_start_buttons():
@@ -63,9 +60,10 @@ def get_start_buttons():
             InlineKeyboardButton("🤖 About", callback_data="about_data")
         ]
     ]
-    if Config.FORCE_SUB_CHANNEL:
-        chan = Config.FORCE_SUB_CHANNEL.lstrip("@")
-        url = f"https://t.me/{chan}" if not chan.startswith("-") else "https://t.me"
+    raw_channel = getattr(Config, "FORCE_SUB_CHANNEL", "")
+    chan = clean_channel_input(raw_channel)
+    if chan:
+        url = f"https://t.me/{chan}" if not str(chan).startswith("-") else "https://t.me"
         buttons.append([InlineKeyboardButton("📢 Updates Channel", url=url)])
     return InlineKeyboardMarkup(buttons)
 
@@ -77,10 +75,8 @@ def get_back_button():
 @Client.on_message(filters.command("start") & filters.private)
 async def start_handler(client: Client, message: Message):
     user = message.from_user
-    # Save user to DB
     await db.add_user(user.id, user.first_name, user.username or "")
     
-    # Check force subscribe
     if not await is_subscribed(client, user.id):
         return await send_force_sub_message(client, message)
         
@@ -117,7 +113,10 @@ async def callback_handler(client: Client, query: CallbackQuery):
     if data == "check_sub":
         if await is_subscribed(client, user.id):
             await query.answer("✅ Thank you! Verification successful.", show_alert=True)
-            await query.message.delete()
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
             await client.send_message(
                 user.id,
                 START_TEXT.format(mention=user.mention),
