@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import json
 import asyncio
 import logging
 import urllib.parse
@@ -40,7 +41,7 @@ def extract_terabox_surl(url: str) -> str:
     surl = qs.get("surl", [""])[0]
     if not surl and "/s/" in parsed.path:
         surl = parsed.path.split("/s/")[1].split("/")[0].split("?")[0]
-    elif not surl and "/sharing/link" in parsed.path and "surl=" in parsed.query:
+    elif not surl and ("sharing/link" in parsed.path or "filelist" in parsed.path) and "surl=" in parsed.query:
         surl = qs.get("surl", [""])[0]
     elif not surl:
         surl = parsed.path.strip("/").split("/")[-1]
@@ -55,9 +56,10 @@ async def resolve_terabox_link(url: str):
     """
     Resolve Terabox link to extract direct downloadable stream URL, filename, and size.
     Uses:
-    1. TeraboxDL Python library with TERABOX_COOKIE.
-    2. Native Terabox jsToken extraction + share/list API.
-    3. Fast third-party worker fallbacks with 5-second max timeout.
+    1. Mobile WAP __INITIAL_STATE__ extraction (bypasses Cloudflare captcha).
+    2. TeraboxDL Python library with TERABOX_COOKIE.
+    3. Native Terabox jsToken extraction + share/list API.
+    4. Fast fallback public resolvers (5s timeout).
     """
     url = clean_url(url)
     surl = extract_terabox_surl(url)
@@ -65,14 +67,73 @@ async def resolve_terabox_link(url: str):
         logger.warning(f"Could not extract surl from: {url}")
         return None
 
-    cookie_raw = Config.TERABOX_COOKIE.strip()
+    cookie_raw = getattr(Config, "TERABOX_COOKIE", os.getenv("TERABOX_COOKIE", "")).strip()
     cookie_str = cookie_raw
     if cookie_str and "ndus=" not in cookie_str:
         cookie_str = f"ndus={cookie_str}"
     if cookie_str and "lang=" not in cookie_str:
         cookie_str = f"lang=en; {cookie_str}"
 
-    # Strategy 1: Use TeraboxDL library if installed and cookie configured
+    # Strategy 1: Mobile WAP __INITIAL_STATE__ extraction (Direct & Fast)
+    try:
+        wap_url = f"https://www.terabox.app/wap/share/filelist?surl={surl}"
+        wap_headers = {
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.terabox.app/"
+        }
+        if cookie_str:
+            wap_headers["Cookie"] = cookie_str
+
+        async with aiohttp.ClientSession(headers=wap_headers) as session:
+            async with session.get(wap_url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                if resp.status == 200:
+                    html = await resp.text()
+                    m = re.search(r'window\.__INITIAL_STATE__\s*=\s*({.*?});', html, re.DOTALL)
+                    if m:
+                        state = json.loads(m.group(1))
+                        share_data = state.get("share", {})
+                        file_list = share_data.get("fileList", [])
+                        if file_list:
+                            f = file_list[0]
+                            dlink = f.get("dlink")
+                            if dlink:
+                                logger.info(f"Resolved via WAP state: {f.get('server_filename')}")
+                                return {
+                                    "direct_url": dlink,
+                                    "filename": f.get("server_filename", "video.mp4"),
+                                    "size": int(f.get("size", 0))
+                                }
+                            
+                            fs_id = f.get("fs_id")
+                            js_token = state.get("jsToken")
+                            share_info = share_data.get("shareInfo", {})
+                            shareid = share_info.get("shareid")
+                            uk = share_info.get("uk")
+                            sign = share_info.get("sign")
+                            timestamp = share_info.get("timestamp")
+
+                            if fs_id and js_token and shareid and sign and timestamp:
+                                dl_api = (
+                                    f"https://www.terabox.app/share/download?app_id=250528&web=1&channel=dubox"
+                                    f"&clienttype=0&jsToken={js_token}&shareid={shareid}&sign={sign}"
+                                    f"&timestamp={timestamp}&primaryid={shareid}&uk={uk}&product=share"
+                                    f"&nozip=0&fid_list=[{fs_id}]"
+                                )
+                                async with session.get(dl_api, timeout=aiohttp.ClientTimeout(total=8)) as dl_resp:
+                                    if dl_resp.status == 200:
+                                        dl_data = await dl_resp.json()
+                                        if dl_data.get("errno") == 0 and dl_data.get("dlink"):
+                                            return {
+                                                "direct_url": dl_data["dlink"],
+                                                "filename": f.get("server_filename", "video.mp4"),
+                                                "size": int(f.get("size", 0))
+                                            }
+    except Exception as e:
+        logger.debug(f"WAP resolution strategy failed: {e}")
+
+    # Strategy 2: Use TeraboxDL library if installed and cookie configured
     if cookie_str:
         try:
             from TeraboxDL import TeraboxDL
@@ -98,7 +159,7 @@ async def resolve_terabox_link(url: str):
         except Exception as e:
             logger.debug(f"TeraboxDL strategy failed: {e}")
 
-    # Strategy 2: Native aiohttp with jsToken extraction
+    # Strategy 3: Desktop share/list with jsToken
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -119,8 +180,8 @@ async def resolve_terabox_link(url: str):
                         m = re.search(r'fn%28%22(.*?)%22%29', text)
                         if m:
                             js_token = m.group(1)
-            except Exception as e:
-                logger.debug(f"Error getting jsToken: {e}")
+            except Exception:
+                pass
 
             api_url = f"https://www.terabox.app/share/list?app_id=250528&shorturl={surl}&root=1"
             if js_token:
@@ -148,7 +209,7 @@ async def resolve_terabox_link(url: str):
     except Exception as e:
         logger.debug(f"Native Terabox API error: {e}")
 
-    # Strategy 3: Fast fallback public resolver (5s timeout)
+    # Strategy 4: Fast fallback public resolver (5s timeout)
     try:
         fallback_url = f"https://terabox-dl.qtcloud.workers.dev/api/get-info?shorturl={surl}"
         async with aiohttp.ClientSession() as session:
@@ -173,9 +234,9 @@ async def resolve_terabox_link(url: str):
 async def download_file_with_progress(url: str, dest_path: str, status_msg, start_time):
     """
     Download a remote stream/file to local disk with live progress updates.
-    Validates that the file is not a tiny 100-byte error response!
     """
-    cookie_str = Config.TERABOX_COOKIE.strip()
+    cookie_raw = getattr(Config, "TERABOX_COOKIE", os.getenv("TERABOX_COOKIE", "")).strip()
+    cookie_str = cookie_raw
     if cookie_str and "ndus=" not in cookie_str:
         cookie_str = f"ndus={cookie_str}"
     if cookie_str and "lang=" not in cookie_str:
@@ -199,7 +260,8 @@ async def download_file_with_progress(url: str, dest_path: str, status_msg, star
                 raise Exception("Server returned a web/HTML page instead of video stream. Login/Cookie might be required.")
 
             total_size = int(response.headers.get("content-length", 0))
-            if total_size > Config.MAX_FILE_SIZE:
+            max_size = getattr(Config, "MAX_FILE_SIZE", 2 * 1024 * 1024 * 1024)
+            if total_size > max_size:
                 raise Exception("File size exceeds Telegram's 2 GB limit.")
 
             downloaded = 0
