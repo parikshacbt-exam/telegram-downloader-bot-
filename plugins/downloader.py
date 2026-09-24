@@ -107,17 +107,14 @@ async def link_downloader_handler(client: Client, message: Message):
             await status_msg.edit_text("⚡ **Resolving Terabox link...** Please wait.")
             resolved = await resolve_terabox_link(url)
 
-            if not resolved or not resolved.get("direct_url"):
-                return await status_msg.edit_text(
-                    "❌ **Terabox Link Resolve नहीं हो सका!**\n\n"
-                    "**संभावित कारण:**\n"
-                    "1. यह लिंक Terabox द्वारा हटा दिया गया है या पासवर्ड प्रोटेक्टेड है।\n"
-                    "2. Terabox सर्वर ने लॉगिन की मांग की है।\n\n"
-                    "💡 **समाधान (10 सेकंड में):**\n"
-                    "अपने Terabox खाते का `ndus` कुकी बॉट में भेजें:\n"
-                    "`/cookie <आपकी_ndus_कुकी>`\n\n"
-                    "*(कुकी सेट होते ही सभी Terabox वीडियो तुरंत डाउनलोड होने लगेंगे)*"
-                )
+            if not resolved or not resolved.get("success") or not resolved.get("direct_url"):
+                reason = resolved.get("reason", "लिंक रिज़ॉल्व नहीं हो सका।") if resolved else "लिंक रिज़ॉल्व नहीं हो सका।"
+                help_tip = resolved.get("help_tip", "") if resolved else ""
+                
+                err_text = f"❌ **Terabox Link Resolve Error**\n\n**कारण:** {reason}"
+                if help_tip:
+                    err_text += f"\n\n{help_tip}"
+                return await status_msg.edit_text(err_text)
 
             direct_url = resolved["direct_url"]
             filename = resolved.get("filename") or "video.mp4"
