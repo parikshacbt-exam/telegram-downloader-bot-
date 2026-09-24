@@ -31,6 +31,14 @@ async def main():
     os.makedirs(Config.DOWNLOAD_DIR, exist_ok=True)
     await run_web()
 
+    # Safe verification of TERABOX_COOKIE (without exposing secret value)
+    cookie = await db.get_terabox_cookie()
+    if cookie:
+        logger.info("TERABOX_COOKIE configured: YES")
+        logger.info(f"TERABOX_COOKIE length: {len(cookie)}")
+    else:
+        logger.warning("TERABOX_COOKIE configured: NO")
+
     bot = Client(
         "bot_session",
         api_id=Config.API_ID,
