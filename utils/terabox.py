@@ -39,16 +39,21 @@ def extract_terabox_surl(url: str) -> str:
     url = clean_url(url)
     parsed = urllib.parse.urlparse(url)
     qs = urllib.parse.parse_qs(parsed.query)
-    surl = qs.get("surl", [""])[0]
-    if not surl and "/s/" in parsed.path:
-        surl = parsed.path.split("/s/")[1].split("/")[0].split("?")[0]
-    elif not surl and ("sharing/link" in parsed.path or "filelist" in parsed.path) and "surl=" in parsed.query:
-        surl = qs.get("surl", [""])[0]
-    elif not surl:
+    
+    # 1. Query parameter ?surl=... or ?shorturl=...
+    surl = qs.get("surl", [""])[0] or qs.get("shorturl", [""])[0]
+    
+    # 2. Path parameter /s/<surl> or /share/<surl>
+    if not surl:
+        match = re.search(r'/(?:s|share)/([a-zA-Z0-9_\-]+)', parsed.path)
+        if match:
+            surl = match.group(1)
+            
+    # 3. Fallback to last path segment
+    if not surl:
         surl = parsed.path.strip("/").split("/")[-1]
     
-    surl = re.sub(r'[\.…\s]+$', '', surl).strip()
-    return surl
+    return re.sub(r'[\.…\s]+$', '', surl).strip()
 
 def get_candidate_surls(surl: str) -> list[str]:
     """Return candidates for shortcode (as-is, and with/without leading 1)"""
@@ -59,29 +64,45 @@ def get_candidate_surls(surl: str) -> list[str]:
         candidates.append("1" + surl)
     return candidates
 
-async def resolve_terabox_link(url: str):
+def format_terabox_cookie(cookie_raw: str) -> str:
+    """Safely format and sanitize Terabox cookie string without exposing secrets"""
+    if not cookie_raw:
+        return ""
+    cookie = cookie_raw.strip().strip("'\"").rstrip(".… ")
+    if not cookie:
+        return ""
+    if "ndus=" in cookie:
+        m = re.search(r'ndus=([^;]+)', cookie)
+        ndus_val = m.group(1).strip() if m else cookie.replace("ndus=", "").strip()
+    else:
+        ndus_val = cookie
+    ndus_val = ndus_val.strip().strip("'\"").rstrip(".… ")
+    return f"ndus={ndus_val}; lang=en" if ndus_val else ""
+
+async def resolve_terabox_link(url: str) -> dict:
     """
     Resolve Terabox link to extract direct downloadable stream URL, filename, and size.
-    Uses multi-strategy resolution:
-    1. Native Terabox Desktop API with jsToken + Cookie
-    2. Mobile WAP __INITIAL_STATE__ extraction
-    3. Fast Worker Fallback Resolvers (4s timeout)
+    Returns:
+        dict: {"success": True, "direct_url": str, "filename": str, "size": int}
+        OR
+        dict: {"success": False, "reason": str, "code": str, "help_tip": str}
     """
     url = clean_url(url)
     surl = extract_terabox_surl(url)
     if not surl:
-        logger.warning(f"Could not extract surl from: {url}")
-        return None
+        return {
+            "success": False,
+            "code": "INVALID_URL",
+            "reason": "URL से Terabox shortcode (surl) नहीं निकाला जा सका।",
+            "help_tip": "कृपया सुनिश्चित करें कि लिंक सही फॉर्मेट में है।"
+        }
 
     # Load cookie dynamically from DB (set via /cookie) or Config fallback
     cookie_raw = await db.get_terabox_cookie()
-    cookie_str = cookie_raw.strip().strip("'\"").rstrip(".… ")
-    if cookie_str and "ndus=" not in cookie_str:
-        cookie_str = f"ndus={cookie_str}"
-    if cookie_str and "lang=" not in cookie_str:
-        cookie_str = f"lang=en; {cookie_str}"
+    cookie_str = format_terabox_cookie(cookie_raw)
 
     candidate_surls = get_candidate_surls(surl)
+    last_errno = None
 
     # =========================================================================
     # Strategy 1: Native Desktop API with extracted jsToken (Best & Most Stable)
@@ -125,16 +146,20 @@ async def resolve_terabox_link(url: str):
                     async with session.get(api_url, headers=api_headers, timeout=aiohttp.ClientTimeout(total=8)) as resp:
                         if resp.status == 200:
                             data = await resp.json()
-                            if data.get("errno") == 0 and data.get("list"):
+                            errno = data.get("errno")
+                            if errno == 0 and data.get("list"):
                                 file_item = data["list"][0]
                                 dlink = file_item.get("dlink")
                                 if dlink:
                                     logger.info(f"Resolved via Desktop API: {file_item.get('server_filename')}")
                                     return {
+                                        "success": True,
                                         "direct_url": dlink,
                                         "filename": file_item.get("server_filename", "video.mp4"),
                                         "size": int(file_item.get("size", 0))
                                     }
+                            elif errno is not None:
+                                last_errno = errno
                 except Exception as e:
                     logger.debug(f"Share list API error for {cand}: {e}")
     except Exception as e:
@@ -171,6 +196,7 @@ async def resolve_terabox_link(url: str):
                                     if dlink:
                                         logger.info(f"Resolved via WAP state: {f.get('server_filename')}")
                                         return {
+                                            "success": True,
                                             "direct_url": dlink,
                                             "filename": f.get("server_filename", "video.mp4"),
                                             "size": int(f.get("size", 0))
@@ -196,6 +222,7 @@ async def resolve_terabox_link(url: str):
                                                 dl_data = await dl_resp.json()
                                                 if dl_data.get("errno") == 0 and dl_data.get("dlink"):
                                                     return {
+                                                        "success": True,
                                                         "direct_url": dl_data["dlink"],
                                                         "filename": f.get("server_filename", "video.mp4"),
                                                         "size": int(f.get("size", 0))
@@ -206,7 +233,7 @@ async def resolve_terabox_link(url: str):
         logger.debug(f"WAP resolution strategy failed: {e}")
 
     # =========================================================================
-    # Strategy 3: Fast Worker Fallback Resolvers (Strict 4s timeout)
+    # Strategy 3: Fast Cloudflare Worker Fallback Resolvers (Strict 4s timeout)
     # =========================================================================
     worker_headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
@@ -223,6 +250,7 @@ async def resolve_terabox_link(url: str):
                         if data.get("success") and (data.get("download_link") or data.get("direct_download_url")):
                             dlink = data.get("download_link") or data.get("direct_download_url")
                             return {
+                                "success": True,
                                 "direct_url": dlink,
                                 "filename": data.get("filename") or "video.mp4",
                                 "size": int(data.get("size", 0))
@@ -241,6 +269,7 @@ async def resolve_terabox_link(url: str):
                                 item = data["data"]
                                 if item.get("dlink"):
                                     return {
+                                        "success": True,
                                         "direct_url": item["dlink"],
                                         "filename": item.get("name") or "video.mp4",
                                         "size": int(item.get("size", 0))
@@ -250,7 +279,45 @@ async def resolve_terabox_link(url: str):
     except Exception as e:
         logger.debug(f"Worker fallback error: {e}")
 
-    return None
+    # =========================================================================
+    # Error classification and clear guidance
+    # =========================================================================
+    if last_errno == 105:
+        if cookie_str:
+            return {
+                "success": False,
+                "code": "COOKIE_EXPIRED",
+                "reason": "Terabox ने लॉगिन आवश्यक बताया है (आपका TERABOX_COOKIE एक्सपायर या इनवैलिड हो चुका है)।",
+                "help_tip": "💡 **समाधान:** नया `ndus` कुकी लेकर बॉट में भेजें:\n`/cookie <आपकी_ndus_कुकी>`"
+            }
+        else:
+            return {
+                "success": False,
+                "code": "NO_COOKIE",
+                "reason": "Terabox सुरक्षा नियमों के कारण डाउनलोड के लिए लॉगिन कुकी आवश्यक है।",
+                "help_tip": "💡 **समाधान (15 सेकंड में):**\nबॉट में अपना `ndus` कुकी भेजें:\n`/cookie <आपकी_ndus_कुकी>`\n\n*(या Render के Environment Variables में **TERABOX_COOKIE** जोड़ें)*"
+            }
+    elif last_errno == 140:
+        return {
+            "success": False,
+            "code": "NOT_FOUND",
+            "reason": "यह फ़ाइल Terabox सर्वर पर मौजूद नहीं है, हटा दी गई है, या लिंक एक्सपायर हो चुका है।",
+            "help_tip": "कृपया सुनिश्चित करें कि लिंक सही और सक्रिय है।"
+        }
+    elif last_errno == 400210:
+        return {
+            "success": False,
+            "code": "NEED_VERIFY",
+            "reason": "Terabox ने सुरक्षा सत्यापन (Cloudflare/Captcha Challenge) मांगा है।",
+            "help_tip": "💡 **समाधान:** एक ताज़ा `ndus` कुकी बॉट में भेजें:\n`/cookie <आपकी_ndus_कुकी>`"
+        }
+
+    return {
+        "success": False,
+        "code": "UNKNOWN",
+        "reason": "Terabox लिंक रिज़ॉल्व नहीं हो सका।",
+        "help_tip": "💡 यदि यह प्राइवेट लिंक है या लॉगिन की मांग कर रहा है, तो बॉट में `/cookie <ndus>` भेजें।"
+    }
 
 async def download_file_with_progress(url: str, dest_path: str, status_msg, start_time):
     """
@@ -258,11 +325,7 @@ async def download_file_with_progress(url: str, dest_path: str, status_msg, star
     Validates that the file is not an HTML error response.
     """
     cookie_raw = await db.get_terabox_cookie()
-    cookie_str = cookie_raw.strip().strip("'\"").rstrip(".… ")
-    if cookie_str and "ndus=" not in cookie_str:
-        cookie_str = f"ndus={cookie_str}"
-    if cookie_str and "lang=" not in cookie_str:
-        cookie_str = f"lang=en; {cookie_str}"
+    cookie_str = format_terabox_cookie(cookie_raw)
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
