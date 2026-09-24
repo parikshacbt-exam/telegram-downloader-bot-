@@ -41,6 +41,11 @@ HELP_TEXT = """
   _Tags:_ `{filename}`, `{filesize}`
 • `/view_caption` - View caption.
 • `/del_caption` - Delete caption.
+
+4️⃣ **Terabox Cookie (Admin):**
+• `/cookie <ndus>` - Set or update Terabox cookie in chat.
+• `/cookie` - View current cookie status & setup guide.
+• `/del_cookie` - Delete stored cookie.
 """
 
 ABOUT_TEXT = """

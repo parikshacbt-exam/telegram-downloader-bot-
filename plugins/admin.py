@@ -122,3 +122,69 @@ async def broadcast_handler(client: Client, message: Message):
         f"🚫 **Blocked:** `{blocked}`\n"
         f"❌ **Failed:** `{failed}`"
     )
+
+@Client.on_message(filters.command(["cookie", "set_cookie", "get_cookie"]) & filters.private)
+async def cookie_handler(client: Client, message: Message):
+    if not is_admin(message.from_user.id):
+        return await message.reply_text("⛔ You are not authorized to use admin commands.", quote=True)
+
+    if len(message.command) > 1:
+        # User provided a cookie to set
+        raw_cookie = message.text.split(None, 1)[1].strip()
+        # Clean quotes, ndus= prefix, trailing dots or ellipsis
+        clean_cookie = raw_cookie.strip("'\"")
+        if "ndus=" in clean_cookie:
+            clean_cookie = clean_cookie.split("ndus=")[1].split(";")[0].strip()
+        clean_cookie = clean_cookie.rstrip(".… ")
+
+        if len(clean_cookie) < 15:
+            return await message.reply_text(
+                "❌ **Invalid Cookie!**\n\n"
+                "Terabox `ndus` cookie आमतौर पर लगभग 40+ अक्षरों का होता है।\n"
+                "कृपया सही मान कॉपी करके भेजें: `/cookie <ndus>`",
+                quote=True
+            )
+
+        await db.set_setting("terabox_cookie", clean_cookie)
+        Config.TERABOX_COOKIE = clean_cookie
+
+        masked = f"{clean_cookie[:8]}...{clean_cookie[-6:]}"
+        return await message.reply_text(
+            "✅ **Terabox Cookie सफलतापूर्वक सेव हो गई!**\n\n"
+            f"🍪 **कुकी:** `{masked}`\n"
+            "⚡ अब Terabox के सभी लिंक्स बिना रुके तुरंत डाउनलोड होंगे!\n"
+            "*(Render को दोबारा रीस्टार्ट करने की भी आवश्यकता नहीं है)*",
+            quote=True
+        )
+
+    # If no argument, show status & guide
+    current_cookie = await db.get_terabox_cookie()
+    if current_cookie:
+        masked = f"{current_cookie[:8]}...{current_cookie[-6:]}"
+        cookie_status = f"✅ **सक्रिय (Active):** `{masked}`"
+    else:
+        cookie_status = "⚠️ **सेट नहीं है (Not Set)**"
+
+    guide_text = (
+        "🍪 **Terabox Cookie Manager**\n\n"
+        f"वर्तमान स्थिति: {cookie_status}\n\n"
+        "**नया कुकी सेट करने का तरीका:**\n"
+        "`/cookie <आपकी_ndus_कुकी>`\n\n"
+        "**💡 15 सेकंड में कुकी कैसे निकालें (Mobile / PC):**\n"
+        "1. Chrome या Kiwi Browser में `terabox.com` खोलकर लॉगिन करें।\n"
+        "2. F12 (Inspect) दबाएं > **Application** (या **Storage**) टैब > **Cookies** > `terabox.com` पर जाएं।\n"
+        "3. `ndus` नाम की कुकी पर **Right Click > Copy Value** करें।\n"
+        "4. बॉट में भेजें: `/cookie <value>`\n\n"
+        "कुकी हटाने के लिए: `/del_cookie`"
+    )
+    await message.reply_text(guide_text, quote=True)
+
+@Client.on_message(filters.command("del_cookie") & filters.private)
+async def del_cookie_handler(client: Client, message: Message):
+    if not is_admin(message.from_user.id):
+        return await message.reply_text("⛔ You are not authorized to use admin commands.", quote=True)
+
+    await db.del_setting("terabox_cookie")
+    Config.TERABOX_COOKIE = ""
+    await message.reply_text("🗑️ **Terabox Cookie हटा दी गई है।**", quote=True)
+

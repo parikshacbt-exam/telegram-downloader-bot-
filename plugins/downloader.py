@@ -16,6 +16,10 @@ from utils.ytdl import download_with_ytdl
 logger = logging.getLogger(__name__)
 
 VIDEO_EXTENSIONS = [".mp4", ".mkv", ".webm", ".avi", ".mov", ".flv", ".ts", ".m4v"]
+DIRECT_FILE_EXTENSIONS = [
+    ".zip", ".rar", ".7z", ".tar", ".gz", ".iso", ".apk", ".exe", ".pdf",
+    ".docx", ".xlsx", ".pptx", ".mp3", ".wav", ".flac", ".ogg", ".m4a"
+]
 
 def get_filename_from_url(url: str) -> str:
     parsed = urllib.parse.urlparse(url)
@@ -24,6 +28,11 @@ def get_filename_from_url(url: str) -> str:
     if not name or "." not in name:
         name = f"file_{int(time.time())}.mp4"
     return re.sub(r'[\\/*?:"<>|]', "_", name)
+
+def is_direct_file_url(url: str) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    clean_path = urllib.parse.unquote(parsed.path).lower()
+    return any(clean_path.endswith(ext) for ext in (VIDEO_EXTENSIONS + DIRECT_FILE_EXTENSIONS))
 
 def get_video_metadata(video_path: str):
     duration = 0
@@ -83,38 +92,31 @@ async def link_downloader_handler(client: Client, message: Message):
     os.makedirs(download_dir, exist_ok=True)
 
     try:
-        # 1. TERABOX LINKS
+        # ========================================================
+        # PATHWAY 1: TERABOX LINKS
+        # ========================================================
         if is_terabox_link(url):
-            surl = extract_terabox_surl(url)
-            
-            if url.endswith("...") or url.endswith("…") or (surl and len(surl) < 18):
+            # Check if link was accidentally cut off by user
+            if url.endswith("...") or url.endswith("…"):
                 return await status_msg.edit_text(
                     "⚠️ **अधूरा Terabox लिंक (Incomplete Link)!**\n\n"
                     f"आपने जो लिंक भेजा है उसके अंत में `...` है:\n`{url}`\n\n"
-                    "चैनल पोस्ट में टेक्स्ट छोटा होने की वजह से लिंक कट गया है।\n\n"
-                    "💡 **समाधान (10 सेकंड में):**\n"
-                    "1. उस लिंक पर क्लिक करके ब्राउज़र (Chrome) में खोलें।\n"
-                    "2. ब्राउज़र के एड्रेस बार से **पूरा असली लिंक** कॉपी करें।\n"
-                    "3. वह लिंक यहाँ बॉट में भेजें, तुरंत डाउनलोड शुरू हो जाएगा!"
-                )
-
-            cookie_val = getattr(Config, "TERABOX_COOKIE", os.getenv("TERABOX_COOKIE", "")).strip()
-            if cookie_val.endswith("...") or cookie_val.endswith("…"):
-                return await status_msg.edit_text(
-                    "❌ **आपका TERABOX_COOKIE अधूरा (Truncated) है!**\n\n"
-                    "Render Environment Variables में आपकी कुकी के अंत में `...` लगा हुआ है।\n"
-                    "ब्राउज़र DevTools में `ndus` पर **Right Click > Copy Value** करके पूरा 44-अक्षर का कोड कॉपी करें और Render में पेस्ट करके सेव करें।"
+                    "💡 **समाधान:** कृपया ब्राउज़र के एड्रेस बार से पूरा असली लिंक कॉपी करके यहाँ भेजें।"
                 )
 
             await status_msg.edit_text("⚡ **Resolving Terabox link...** Please wait.")
             resolved = await resolve_terabox_link(url)
+
             if not resolved or not resolved.get("direct_url"):
                 return await status_msg.edit_text(
                     "❌ **Terabox Link Resolve नहीं हो सका!**\n\n"
                     "**संभावित कारण:**\n"
-                    "1. यह लिंक Terabox द्वारा हटा दिया गया है या लॉक है।\n"
-                    "2. Render में आपका **TERABOX_COOKIE** एक्सपायर हो चुका है।\n\n"
-                    "💡 **समाधान:** अपने Terabox अकाउंट से नया `ndus` कुकी लेकर Render के Environment Variables में **TERABOX_COOKIE** अपडेट करें।"
+                    "1. यह लिंक Terabox द्वारा हटा दिया गया है या पासवर्ड प्रोटेक्टेड है।\n"
+                    "2. Terabox सर्वर ने लॉगिन की मांग की है।\n\n"
+                    "💡 **समाधान (10 सेकंड में):**\n"
+                    "अपने Terabox खाते का `ndus` कुकी बॉट में भेजें:\n"
+                    "`/cookie <आपकी_ndus_कुकी>`\n\n"
+                    "*(कुकी सेट होते ही सभी Terabox वीडियो तुरंत डाउनलोड होने लगेंगे)*"
                 )
 
             direct_url = resolved["direct_url"]
@@ -126,7 +128,9 @@ async def link_downloader_handler(client: Client, message: Message):
             await download_file_with_progress(direct_url, temp_download_path, status_msg, time.time())
             video_duration, video_width, video_height = get_video_metadata(temp_download_path)
 
-        # 2. ALL OTHER VIDEOS (YouTube, Instagram, Adult sites, etc.)
+        # ========================================================
+        # PATHWAY 2: ALL OTHER VIDEOS & FILES (YouTube, Insta, Adult tube sites, direct files)
+        # ========================================================
         else:
             await status_msg.edit_text("⚡ **Fetching video stream information...**")
             ytdl_success = False
@@ -134,6 +138,7 @@ async def link_downloader_handler(client: Client, message: Message):
             video_width = 0
             video_height = 0
 
+            # First try universal yt-dlp downloader (supports 1800+ sites)
             try:
                 ytdl_res = await download_with_ytdl(url, download_dir, status_msg, time.time())
                 temp_download_path = ytdl_res["filepath"]
@@ -143,16 +148,25 @@ async def link_downloader_handler(client: Client, message: Message):
                 video_height = ytdl_res["height"]
                 ytdl_success = True
             except Exception as ytdl_err:
-                logger.debug(f"yt-dlp fallback error: {ytdl_err}")
+                logger.info(f"yt-dlp could not handle link ({ytdl_err})")
 
+            # If yt-dlp could not handle it, check if it is a direct file link (.zip, .pdf, direct .mp4)
             if not ytdl_success:
-                filename = get_filename_from_url(url)
-                temp_download_path = os.path.join(download_dir, f"{user_id}_{int(time.time())}_{filename}")
-                await status_msg.edit_text("📥 **Starting Direct File Download...**")
-                await download_file_with_progress(url, temp_download_path, status_msg, time.time())
-                video_duration, video_width, video_height = get_video_metadata(temp_download_path)
+                if is_direct_file_url(url):
+                    filename = get_filename_from_url(url)
+                    temp_download_path = os.path.join(download_dir, f"{user_id}_{int(time.time())}_{filename}")
+                    await status_msg.edit_text("📥 **Starting Direct File Download...**")
+                    await download_file_with_progress(url, temp_download_path, status_msg, time.time())
+                    video_duration, video_width, video_height = get_video_metadata(temp_download_path)
+                else:
+                    return await status_msg.edit_text(
+                        "❌ **इस लिंक से वीडियो या फ़ाइल डाउनलोड नहीं हो सकी!**\n\n"
+                        "कृपया सुनिश्चित करें कि लिंक सही और सार्वजनिक (public) है।"
+                    )
 
-        # 3. UPLOAD TO TELEGRAM
+        # ========================================================
+        # UPLOAD TO TELEGRAM
+        # ========================================================
         if not temp_download_path or not os.path.exists(temp_download_path):
             return await status_msg.edit_text("❌ Download failed. The file could not be retrieved.")
 
@@ -217,7 +231,7 @@ async def link_downloader_handler(client: Client, message: Message):
         except Exception:
             pass
 
-        # 30 मिनट बाद वीडियो डिलीट और बिना किसी टैग के रेगुलेशन नोटिस भेजना
+        # 30-minute auto-delete: Clean deletion with untagged regulations notice
         asyncio.create_task(auto_delete_and_notify(client, message.chat.id, sent_media.id, delay=1800))
 
     except Exception as e:
