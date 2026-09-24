@@ -20,6 +20,7 @@ class Database:
                 self.mongo_client = AsyncIOMotorClient(Config.MONGO_URI)
                 self.db = self.mongo_client[Config.DB_NAME]
                 self.users_col = self.db["users"]
+                self.settings_col = self.db["settings"]
                 # Test connection
                 await self.mongo_client.server_info()
                 logger.info("Successfully connected to MongoDB Atlas!")
@@ -37,6 +38,12 @@ class Database:
                     username TEXT,
                     thumbnail TEXT DEFAULT NULL,
                     caption TEXT DEFAULT NULL
+                )
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
                 )
             """)
             await db.commit()
@@ -171,4 +178,48 @@ class Database:
                 await db.execute("UPDATE users SET caption = NULL WHERE user_id = ?", (user_id,))
                 await db.commit()
 
+    async def set_setting(self, key: str, value: str):
+        """Save a global bot setting (e.g. terabox_cookie)"""
+        if self.use_mongo:
+            await self.settings_col.update_one(
+                {"_id": key},
+                {"$set": {"value": value}},
+                upsert=True
+            )
+        else:
+            async with aiosqlite.connect(self.sqlite_db_path) as db:
+                await db.execute("""
+                    INSERT INTO settings (key, value) VALUES (?, ?)
+                    ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                """, (key, value))
+                await db.commit()
+
+    async def get_setting(self, key: str, default: str = "") -> str:
+        """Get a global bot setting"""
+        if self.use_mongo:
+            doc = await self.settings_col.find_one({"_id": key})
+            return doc.get("value", default) if doc else default
+        else:
+            async with aiosqlite.connect(self.sqlite_db_path) as db:
+                async with db.execute("SELECT value FROM settings WHERE key = ?", (key,)) as cursor:
+                    row = await cursor.fetchone()
+                    return row[0] if row and row[0] is not None else default
+
+    async def del_setting(self, key: str):
+        """Delete a global bot setting"""
+        if self.use_mongo:
+            await self.settings_col.delete_one({"_id": key})
+        else:
+            async with aiosqlite.connect(self.sqlite_db_path) as db:
+                await db.execute("DELETE FROM settings WHERE key = ?", (key,))
+                await db.commit()
+
+    async def get_terabox_cookie(self) -> str:
+        """Get the Terabox ndus cookie (from DB or config)"""
+        db_cookie = await self.get_setting("terabox_cookie", "")
+        if db_cookie and db_cookie.strip():
+            return db_cookie.strip()
+        return getattr(Config, "TERABOX_COOKIE", "").strip()
+
 db = Database()
+
