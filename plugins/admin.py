@@ -47,7 +47,6 @@ async def broadcast_handler(client: Client, message: Message):
     if not is_admin(message.from_user.id):
         return await message.reply_text("⛔ You are not authorized to use admin commands.", quote=True)
 
-    # Broadcast message can either be a reply to any message or text after command
     broadcast_msg = message.reply_to_message
     if not broadcast_msg and len(message.command) < 2:
         return await message.reply_text(
@@ -80,7 +79,6 @@ async def broadcast_handler(client: Client, message: Message):
             success += 1
         except FloodWait as e:
             await asyncio.sleep(e.value)
-            # Retry once after sleep
             try:
                 if broadcast_msg:
                     await broadcast_msg.copy(chat_id=user_id)
@@ -97,7 +95,6 @@ async def broadcast_handler(client: Client, message: Message):
             logger.debug(f"Broadcast error for {user_id}: {e}")
             failed += 1
 
-        # Periodic update every 4 seconds
         if time.time() - last_update > 4 or (i + 1) == total_users:
             last_update = time.time()
             try:
@@ -111,7 +108,7 @@ async def broadcast_handler(client: Client, message: Message):
             except Exception:
                 pass
         
-        await asyncio.sleep(0.05)  # Small delay to keep telegram happy
+        await asyncio.sleep(0.05)
 
     time_taken = time_formatter(time.time() - start_time)
     await progress_msg.edit_text(
@@ -129,9 +126,7 @@ async def cookie_handler(client: Client, message: Message):
         return await message.reply_text("⛔ You are not authorized to use admin commands.", quote=True)
 
     if len(message.command) > 1:
-        # User provided a cookie to set
         raw_cookie = message.text.split(None, 1)[1].strip()
-        # Clean quotes, ndus= prefix, trailing dots or ellipsis
         clean_cookie = raw_cookie.strip("'\"")
         if "ndus=" in clean_cookie:
             clean_cookie = clean_cookie.split("ndus=")[1].split(";")[0].strip()
@@ -157,7 +152,6 @@ async def cookie_handler(client: Client, message: Message):
             quote=True
         )
 
-    # If no argument, show status & guide
     current_cookie = await db.get_terabox_cookie()
     if current_cookie:
         masked = f"{current_cookie[:8]}...{current_cookie[-6:]}"
@@ -187,4 +181,3 @@ async def del_cookie_handler(client: Client, message: Message):
     await db.del_setting("terabox_cookie")
     Config.TERABOX_COOKIE = ""
     await message.reply_text("🗑️ **Terabox Cookie हटा दी गई है।**", quote=True)
-
