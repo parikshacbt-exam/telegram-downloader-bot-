@@ -13,19 +13,27 @@ from utils.progress import progress_for_pyrogram
 
 logger = logging.getLogger(__name__)
 
+# Complete list of known Terabox domains and mirror networks
 TERABOX_DOMAINS = [
-    "terabox.com", "teraboxapp.com", "1024tera.com", "teraboxshare.com",
-    "4funbox.com", "mirrobox.com", "nephobox.com", "freeterabox.com",
-    "1024terabox.com", "terasharelink.com", "terabox.app", "teraboxlink.com",
-    "dm.terabox.app", "terafileshare.com", "terasharefile.com"
+    "terabox.com", "terabox.app", "teraboxapp.com", "1024tera.com", "1024terabox.com",
+    "terasharelink.com", "terafileshare.com", "terasharefile.com", "terashareus.com",
+    "terasharedrive.com", "teraboxlink.com", "teraboxlinke.com", "teraboxshare.com",
+    "teraboxsharefile.com", "teraboxurl.com", "teraboxfree.com", "teraboxmod.app",
+    "4funbox.com", "4funbox.co", "4funbox.in", "mirrobox.com", "nephobox.com",
+    "freeterabox.com", "momerybox.com", "tibibox.com", "gibibox.com", "pebibox.com",
+    "fancybox.in", "dubox.com", "bestclouddrive.com", "playduo.link", "dm.terabox.app",
+    "dm.1024tera.com"
 ]
+
+# In-memory cache for community fallback cookies
+_COMMUNITY_COOKIE_CACHE = {"cookies": [], "expiry": 0}
 
 def clean_url(url: str) -> str:
     """Clean trailing dots, ellipsis, spaces, or query noise from URL"""
     return re.sub(r'[\.…\s]+$', '', url).strip()
 
 def is_terabox_link(url: str) -> bool:
-    """Check if the provided link is a Terabox domain link"""
+    """Check if the provided link belongs to any Terabox domain or mirror"""
     clean = clean_url(url)
     try:
         parsed = urllib.parse.urlparse(clean)
@@ -79,9 +87,59 @@ def format_terabox_cookie(cookie_raw: str) -> str:
     ndus_val = ndus_val.strip().strip("'\"").rstrip(".… ")
     return f"ndus={ndus_val}; lang=en" if ndus_val else ""
 
+def extract_js_token(html: str) -> str | None:
+    """Multi-pattern jsToken extractor from desktop & mobile WAP HTML responses"""
+    # Pattern 1: URL encoded fn%28%22...%22%29
+    m = re.search(r'fn%28%22([A-Fa-f0-9]+)%22%29', html)
+    if m:
+        return m.group(1)
+    
+    # Pattern 2: eval decodeURIComponent
+    m = re.search(r'eval\(decodeURIComponent\(`([^`]+)`\)\)', html)
+    if m:
+        try:
+            decoded = urllib.parse.unquote(m.group(1))
+            m2 = re.search(r'fn\("([A-Fa-f0-9]+)"\)', decoded)
+            if m2:
+                return m2.group(1)
+        except Exception:
+            pass
+
+    # Pattern 3: direct jsToken property in JSON / script tag
+    m = re.search(r'["\']?jsToken["\']?\s*[:=]\s*["\']([a-zA-Z0-9+/=_-]{16,})["\']', html)
+    if m:
+        return m.group(1)
+        
+    return None
+
+async def get_community_fallback_cookies() -> list[str]:
+    """Fetch active community cookies pool with a 5-minute local cache and 3s timeout"""
+    now = time.time()
+    if _COMMUNITY_COOKIE_CACHE["cookies"] and _COMMUNITY_COOKIE_CACHE["expiry"] > now:
+        return _COMMUNITY_COOKIE_CACHE["cookies"]
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get("https://tera.backend.live/cookies-list", timeout=aiohttp.ClientTimeout(total=3)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if isinstance(data, list) and data:
+                        clean_cookies = [c.strip().rstrip(";") for c in data if "ndus=" in c]
+                        _COMMUNITY_COOKIE_CACHE["cookies"] = clean_cookies
+                        _COMMUNITY_COOKIE_CACHE["expiry"] = now + 300
+                        return clean_cookies
+    except Exception as e:
+        logger.debug(f"Could not fetch community cookies: {e}")
+    return []
+
 async def resolve_terabox_link(url: str) -> dict:
     """
     Resolve Terabox link to extract direct downloadable stream URL, filename, and size.
+    Uses multi-strategy resolver:
+      1. Desktop API with extracted jsToken (primary configured cookie)
+      2. Mobile WAP __INITIAL_STATE__ extraction
+      3. Community active cookie pool fallback
+      4. Cloudflare Worker resolvers fallback
     Returns:
         dict: {"success": True, "direct_url": str, "filename": str, "size": int}
         OR
@@ -104,9 +162,7 @@ async def resolve_terabox_link(url: str) -> dict:
     candidate_surls = get_candidate_surls(surl)
     last_errno = None
 
-    # =========================================================================
-    # Strategy 1: Native Desktop API with extracted jsToken (Best & Most Stable)
-    # =========================================================================
+    # Base headers matching modern Chromium/Edge
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -116,18 +172,19 @@ async def resolve_terabox_link(url: str) -> dict:
     if cookie_str:
         headers["Cookie"] = cookie_str
 
+    # =========================================================================
+    # Strategy 1: Desktop API with extracted jsToken
+    # =========================================================================
     try:
         async with aiohttp.ClientSession(headers=headers) as session:
             for cand in candidate_surls:
                 first_url = f"https://www.terabox.app/sharing/link?surl={cand}"
                 js_token = None
                 try:
-                    async with session.get(first_url, timeout=aiohttp.ClientTimeout(total=6)) as r1:
+                    async with session.get(first_url, timeout=aiohttp.ClientTimeout(total=5)) as r1:
                         if r1.status == 200:
                             text = await r1.text()
-                            m = re.search(r'fn%28%22(.*?)%22%29', text)
-                            if m:
-                                js_token = m.group(1)
+                            js_token = extract_js_token(text)
                 except Exception as e:
                     logger.debug(f"First request error for {cand}: {e}")
 
@@ -143,7 +200,7 @@ async def resolve_terabox_link(url: str) -> dict:
                 })
 
                 try:
-                    async with session.get(api_url, headers=api_headers, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                    async with session.get(api_url, headers=api_headers, timeout=aiohttp.ClientTimeout(total=6)) as resp:
                         if resp.status == 200:
                             data = await resp.json()
                             errno = data.get("errno")
@@ -182,7 +239,7 @@ async def resolve_terabox_link(url: str) -> dict:
             for cand in candidate_surls:
                 wap_url = f"https://www.terabox.app/wap/share/filelist?surl={cand}"
                 try:
-                    async with session.get(wap_url, timeout=aiohttp.ClientTimeout(total=6)) as resp:
+                    async with session.get(wap_url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
                         if resp.status == 200:
                             html = await resp.text()
                             m = re.search(r'window\.__INITIAL_STATE__\s*=\s*({.*?});', html, re.DOTALL)
@@ -217,7 +274,7 @@ async def resolve_terabox_link(url: str) -> dict:
                                             f"&timestamp={timestamp}&primaryid={shareid}&uk={uk}&product=share"
                                             f"&nozip=0&fid_list=[{fs_id}]"
                                         )
-                                        async with session.get(dl_api, timeout=aiohttp.ClientTimeout(total=6)) as dl_resp:
+                                        async with session.get(dl_api, timeout=aiohttp.ClientTimeout(total=5)) as dl_resp:
                                             if dl_resp.status == 200:
                                                 dl_data = await dl_resp.json()
                                                 if dl_data.get("errno") == 0 and dl_data.get("dlink"):
@@ -233,7 +290,45 @@ async def resolve_terabox_link(url: str) -> dict:
         logger.debug(f"WAP resolution strategy failed: {e}")
 
     # =========================================================================
-    # Strategy 3: Fast Cloudflare Worker Fallback Resolvers (Strict 4s timeout)
+    # Strategy 3: Community Cookie Pool Fallback (When primary cookie missing/expired)
+    # =========================================================================
+    if last_errno in (105, None):
+        community_cookies = await get_community_fallback_cookies()
+        if community_cookies:
+            logger.info("Testing community cookie pool fallback...")
+            try:
+                # Try up to 3 community cookies
+                for c_cand in community_cookies[:3]:
+                    c_hdr = {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+                        "Accept": "application/json, text/plain, */*",
+                        "Cookie": f"{c_cand}; lang=en",
+                        "Referer": "https://www.terabox.app/"
+                    }
+                    async with aiohttp.ClientSession(headers=c_hdr) as session:
+                        for cand in candidate_surls:
+                            api_url = f"https://www.terabox.app/share/list?app_id=250528&shorturl={cand}&root=1"
+                            try:
+                                async with session.get(api_url, timeout=aiohttp.ClientTimeout(total=4)) as resp:
+                                    if resp.status == 200:
+                                        data = await resp.json()
+                                        if data.get("errno") == 0 and data.get("list"):
+                                            file_item = data["list"][0]
+                                            if file_item.get("dlink"):
+                                                logger.info(f"Resolved via Community Cookie: {file_item.get('server_filename')}")
+                                                return {
+                                                    "success": True,
+                                                    "direct_url": file_item["dlink"],
+                                                    "filename": file_item.get("server_filename", "video.mp4"),
+                                                    "size": int(file_item.get("size", 0))
+                                                }
+                            except Exception:
+                                pass
+            except Exception as e:
+                logger.debug(f"Community cookie fallback error: {e}")
+
+    # =========================================================================
+    # Strategy 4: Fast Cloudflare Worker Fallback Resolvers (Strict 4s timeout)
     # =========================================================================
     worker_headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
@@ -294,7 +389,7 @@ async def resolve_terabox_link(url: str) -> dict:
             return {
                 "success": False,
                 "code": "NO_COOKIE",
-                "reason": "Terabox सुरक्षा नियमों के कारण डाउनलोड के लिए लॉगिन कुकी आवश्यक है।",
+                "reason": "Terabox सुरक्षा नियमों के कारण इस फ़ाइल के लिए लॉगिन कुकी आवश्यक है।",
                 "help_tip": "💡 **समाधान (15 सेकंड में):**\nबॉट में अपना `ndus` कुकी भेजें:\n`/cookie <आपकी_ndus_कुकी>`\n\n*(या Render के Environment Variables में **TERABOX_COOKIE** जोड़ें)*"
             }
     elif last_errno == 140:

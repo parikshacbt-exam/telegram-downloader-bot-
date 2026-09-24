@@ -48,7 +48,7 @@ async def is_subscribed(client, user_id: int) -> bool:
         if status_str in ["left", "banned", "kicked"]:
             return False
         
-        # All other statuses (owner, creator, administrator, member, restricted) -> SUBSCRIBED
+        # All other statuses: owner, creator, administrator, member, restricted -> SUBSCRIBED
         return True
     except UserNotParticipant:
         return False

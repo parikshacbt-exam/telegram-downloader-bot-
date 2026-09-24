@@ -10,7 +10,6 @@ class Database:
         self.mongo_client = None
         self.db = None
         self.users_col = None
-        self.settings_col = None
         self.sqlite_db_path = "downloader.db"
 
     async def init(self):
@@ -22,6 +21,7 @@ class Database:
                 self.db = self.mongo_client[Config.DB_NAME]
                 self.users_col = self.db["users"]
                 self.settings_col = self.db["settings"]
+                # Test connection
                 await self.mongo_client.server_info()
                 logger.info("Successfully connected to MongoDB Atlas!")
                 return
@@ -50,6 +50,7 @@ class Database:
         logger.info(f"Initialized local SQLite database: {self.sqlite_db_path}")
 
     async def add_user(self, user_id: int, name: str = "", username: str = ""):
+        """Save a new user or update basic details"""
         if self.use_mongo:
             try:
                 await self.users_col.update_one(
@@ -69,6 +70,7 @@ class Database:
                 await db.commit()
 
     async def get_all_users(self):
+        """Retrieve list of all registered user IDs"""
         users = []
         if self.use_mongo:
             try:
@@ -85,6 +87,7 @@ class Database:
         return users
 
     async def total_users_count(self) -> int:
+        """Count total registered users"""
         if self.use_mongo:
             try:
                 return await self.users_col.count_documents({})
@@ -98,6 +101,7 @@ class Database:
                     return row[0] if row else 0
 
     async def set_thumbnail(self, user_id: int, file_id: str):
+        """Set user's custom thumbnail file_id"""
         if self.use_mongo:
             await self.users_col.update_one(
                 {"_id": user_id},
@@ -113,6 +117,7 @@ class Database:
                 await db.commit()
 
     async def get_thumbnail(self, user_id: int):
+        """Get user's custom thumbnail file_id"""
         if self.use_mongo:
             doc = await self.users_col.find_one({"_id": user_id}, {"thumbnail": 1})
             return doc.get("thumbnail") if doc else None
@@ -123,6 +128,7 @@ class Database:
                     return row[0] if row and row[0] else None
 
     async def del_thumbnail(self, user_id: int):
+        """Remove user's custom thumbnail"""
         if self.use_mongo:
             await self.users_col.update_one(
                 {"_id": user_id},
@@ -134,6 +140,7 @@ class Database:
                 await db.commit()
 
     async def set_caption(self, user_id: int, caption: str):
+        """Set user's custom caption template"""
         if self.use_mongo:
             await self.users_col.update_one(
                 {"_id": user_id},
@@ -149,6 +156,7 @@ class Database:
                 await db.commit()
 
     async def get_caption(self, user_id: int):
+        """Get user's custom caption"""
         if self.use_mongo:
             doc = await self.users_col.find_one({"_id": user_id}, {"caption": 1})
             return doc.get("caption") if doc else None
@@ -159,6 +167,7 @@ class Database:
                     return row[0] if row and row[0] else None
 
     async def del_caption(self, user_id: int):
+        """Remove user's custom caption"""
         if self.use_mongo:
             await self.users_col.update_one(
                 {"_id": user_id},
@@ -213,3 +222,4 @@ class Database:
         return getattr(Config, "TERABOX_COOKIE", "").strip()
 
 db = Database()
+
