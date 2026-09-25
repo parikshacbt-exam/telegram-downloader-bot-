@@ -116,6 +116,14 @@ async def link_downloader_handler(client: Client, message: Message):
             if not resolved or not resolved.get("success") or not resolved.get("direct_url"):
                 reason = resolved.get("reason", "इस Terabox लिंक से फ़ाइल प्राप्त नहीं हो सकी।") if resolved else "लिंक रिज़ॉल्व नहीं हो सका।"
                 err_text = f"❌ **Terabox Download Error**\n\n**विवरण:** {reason}"
+                if user_id in getattr(Config, "ADMINS", []):
+                    current_cookie = await db.get_terabox_cookie()
+                    if not current_cookie:
+                        err_text += (
+                            "\n\n⚙️ **Bot Admin Setup:**\n"
+                            "सर्वर पर Terabox सेशन एक्टिव नहीं है। सभी यूज़र्स के लिए डाउनलोड चालू करने हेतु बॉट में भेजें:\n"
+                            "`/cookie <आपकी_ndus_कुकी>`"
+                        )
                 return await status_msg.edit_text(err_text)
 
             direct_url = resolved["direct_url"]

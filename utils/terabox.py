@@ -173,24 +173,48 @@ async def resolve_terabox_link(url: str) -> dict:
         headers["Cookie"] = cookie_str
 
     # =========================================================================
-    # Strategy 1: Desktop API with extracted jsToken
+    # Strategy 0: Official TeraboxDL Library (When cookie is configured)
+    # =========================================================================
+    if cookie_str:
+        try:
+            from TeraboxDL import TeraboxDL
+            tdl = TeraboxDL(cookie_str)
+            loop = asyncio.get_running_loop()
+            info = await asyncio.wait_for(loop.run_in_executor(None, tdl.get_file_info, url), timeout=15)
+            if info and not info.get("error") and info.get("download_link"):
+                logger.info(f"Resolved via TeraboxDL library: {info.get('file_name')}")
+                return {
+                    "success": True,
+                    "direct_url": info["download_link"],
+                    "filename": info.get("file_name", "video.mp4"),
+                    "size": int(info.get("size_bytes", 0))
+                }
+        except Exception as e:
+            logger.debug(f"TeraboxDL strategy error: {e}")
+
+    # =========================================================================
+    # Strategy 1: Desktop API with extracted jsToken, dp-logid, and complete parameters
     # =========================================================================
     try:
         async with aiohttp.ClientSession(headers=headers) as session:
             for cand in candidate_surls:
                 first_url = f"https://www.terabox.app/sharing/link?surl={cand}"
                 js_token = None
+                dp_logid = None
                 try:
-                    async with session.get(first_url, timeout=aiohttp.ClientTimeout(total=5)) as r1:
+                    async with session.get(first_url, timeout=aiohttp.ClientTimeout(total=6)) as r1:
                         if r1.status == 200:
                             text = await r1.text()
                             js_token = extract_js_token(text)
+                            m_logid = (
+                                re.search(r'dp-logid=([^&]+)', str(r1.url)) or
+                                re.search(r'dp-logid=([^&"\']+)', text) or
+                                re.search(r'"dp-logId":"([^"]+)"', text)
+                            )
+                            if m_logid:
+                                dp_logid = m_logid.group(1)
                 except Exception as e:
                     logger.debug(f"First request error for {cand}: {e}")
-
-                api_url = f"https://www.terabox.app/share/list?app_id=250528&shorturl={cand}&root=1"
-                if js_token:
-                    api_url += f"&jsToken={js_token}"
 
                 api_headers = dict(headers)
                 api_headers.update({
@@ -199,26 +223,45 @@ async def resolve_terabox_link(url: str) -> dict:
                     "Referer": first_url
                 })
 
-                try:
-                    async with session.get(api_url, headers=api_headers, timeout=aiohttp.ClientTimeout(total=6)) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            errno = data.get("errno")
-                            if errno == 0 and data.get("list"):
-                                file_item = data["list"][0]
-                                dlink = file_item.get("dlink")
-                                if dlink:
-                                    logger.info(f"Resolved via Desktop API: {file_item.get('server_filename')}")
-                                    return {
-                                        "success": True,
-                                        "direct_url": dlink,
-                                        "filename": file_item.get("server_filename", "video.mp4"),
-                                        "size": int(file_item.get("size", 0))
-                                    }
-                            elif errno is not None:
-                                last_errno = errno
-                except Exception as e:
-                    logger.debug(f"Share list API error for {cand}: {e}")
+                params = {
+                    "app_id": "250528",
+                    "web": "1",
+                    "channel": "dubox",
+                    "clienttype": "0",
+                    "page": "1",
+                    "num": "20",
+                    "by": "name",
+                    "order": "asc",
+                    "site_referer": first_url,
+                    "shorturl": cand,
+                    "root": "1,"
+                }
+                if js_token:
+                    params["jsToken"] = js_token
+                if dp_logid:
+                    params["dp-logid"] = dp_logid
+
+                for base_api in ["https://www.terabox.app/share/list", "https://www.1024tera.com/share/list"]:
+                    try:
+                        async with session.get(base_api, headers=api_headers, params=params, timeout=aiohttp.ClientTimeout(total=6)) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                errno = data.get("errno")
+                                if errno == 0 and data.get("list"):
+                                    file_item = data["list"][0]
+                                    dlink = file_item.get("dlink")
+                                    if dlink:
+                                        logger.info(f"Resolved via Desktop API ({base_api}): {file_item.get('server_filename')}")
+                                        return {
+                                            "success": True,
+                                            "direct_url": dlink,
+                                            "filename": file_item.get("server_filename", "video.mp4"),
+                                            "size": int(file_item.get("size", 0))
+                                        }
+                                elif errno is not None:
+                                    last_errno = errno
+                    except Exception as e:
+                        logger.debug(f"Share list API error for {base_api} ({cand}): {e}")
     except Exception as e:
         logger.debug(f"Native Desktop Strategy error: {e}")
 
