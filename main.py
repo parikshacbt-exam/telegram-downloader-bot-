@@ -1,6 +1,13 @@
 import sys, os, asyncio, logging
 from aiohttp import web
 
+# Initialize static ffmpeg and ffprobe paths for seamless video/audio merging
+try:
+    import static_ffmpeg
+    static_ffmpeg.add_paths()
+except Exception as e:
+    pass
+
 # Event loop fix for Python 3.10+ / 3.12 / 3.14
 try:
     loop = asyncio.get_event_loop()
@@ -37,7 +44,7 @@ async def main():
         logger.info("TERABOX_COOKIE configured: YES")
         logger.info(f"TERABOX_COOKIE length: {len(cookie)}")
     else:
-        logger.warning("TERABOX_COOKIE configured: NO")
+        logger.info("TERABOX_COOKIE configured: NO (Using community pool fallback)")
 
     bot = Client(
         "bot_session",

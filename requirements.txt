@@ -11,3 +11,4 @@ Pillow>=10.3.0
 hachoir>=3.3.0
 terabox-downloader>=1.8
 yt-dlp>=2026.8.19
+static-ffmpeg>=2.5

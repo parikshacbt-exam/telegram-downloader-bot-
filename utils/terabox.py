@@ -378,40 +378,28 @@ async def resolve_terabox_link(url: str) -> dict:
     # Error classification and clear guidance
     # =========================================================================
     if last_errno == 105:
-        if cookie_str:
-            return {
-                "success": False,
-                "code": "COOKIE_EXPIRED",
-                "reason": "Terabox ने लॉगिन आवश्यक बताया है (आपका TERABOX_COOKIE एक्सपायर या इनवैलिड हो चुका है)।",
-                "help_tip": "💡 **समाधान:** नया `ndus` कुकी लेकर बॉट में भेजें:\n`/cookie <आपकी_ndus_कुकी>`"
-            }
-        else:
-            return {
-                "success": False,
-                "code": "NO_COOKIE",
-                "reason": "Terabox सुरक्षा नियमों के कारण इस फ़ाइल के लिए लॉगिन कुकी आवश्यक है।",
-                "help_tip": "💡 **समाधान (15 सेकंड में):**\nबॉट में अपना `ndus` कुकी भेजें:\n`/cookie <आपकी_ndus_कुकी>`\n\n*(या Render के Environment Variables में **TERABOX_COOKIE** जोड़ें)*"
-            }
+        return {
+            "success": False,
+            "code": "NEED_LOGIN",
+            "reason": "यह Terabox फ़ाइल प्राइवेट है या Terabox सर्वर द्वारा लॉगिन प्रतिबंधित है।"
+        }
     elif last_errno == 140:
         return {
             "success": False,
             "code": "NOT_FOUND",
-            "reason": "यह फ़ाइल Terabox सर्वर पर मौजूद नहीं है, हटा दी गई है, या लिंक एक्सपायर हो चुका है।",
-            "help_tip": "कृपया सुनिश्चित करें कि लिंक सही और सक्रिय है।"
+            "reason": "यह फ़ाइल Terabox सर्वर पर मौजूद नहीं है, हटा दी गई है, या लिंक एक्सपायर हो चुका है।"
         }
     elif last_errno == 400210:
         return {
             "success": False,
             "code": "NEED_VERIFY",
-            "reason": "Terabox ने सुरक्षा सत्यापन (Cloudflare/Captcha Challenge) मांगा है।",
-            "help_tip": "💡 **समाधान:** एक ताज़ा `ndus` कुकी बॉट में भेजें:\n`/cookie <आपकी_ndus_कुकी>`"
+            "reason": "Terabox सर्वर ने सुरक्षा सत्यापन (Cloudflare/Captcha Challenge) मांगा है।"
         }
 
     return {
         "success": False,
         "code": "UNKNOWN",
-        "reason": "Terabox लिंक रिज़ॉल्व नहीं हो सका।",
-        "help_tip": "💡 यदि यह प्राइवेट लिंक है या लॉगिन की मांग कर रहा है, तो बॉट में `/cookie <ndus>` भेजें।"
+        "reason": "Terabox लिंक रिज़ॉल्व नहीं हो सका (सर्वर सुरक्षा प्रतिबंध या लिंक एक्सपायर हो सकता है)।"
     }
 
 async def download_file_with_progress(url: str, dest_path: str, status_msg, start_time):
@@ -437,7 +425,7 @@ async def download_file_with_progress(url: str, dest_path: str, status_msg, star
 
             content_type = response.headers.get("content-type", "").lower()
             if "text/html" in content_type:
-                raise Exception("Server returned a web/HTML page instead of video stream. Authentication or fresh cookie might be required.")
+                raise Exception("Terabox server returned an HTML error page instead of video stream (link may be expired or protected).")
 
             total_size = int(response.headers.get("content-length", 0))
             max_size = getattr(Config, "MAX_FILE_SIZE", 2 * 1024 * 1024 * 1024)
@@ -465,6 +453,6 @@ async def download_file_with_progress(url: str, dest_path: str, status_msg, star
         actual_size = os.path.getsize(dest_path)
         if actual_size < 10 * 1024:
             os.remove(dest_path)
-            raise Exception("File is corrupt or blocked (< 10 KB received). Please check your TERABOX_COOKIE.")
+            raise Exception("File is corrupt or blocked (< 10 KB received). Link may be expired or inaccessible.")
 
     return dest_path
