@@ -48,10 +48,6 @@ def get_base_ydl_opts(output_dir: str, progress_hook=None):
         'geo_bypass': True,
         'max_filesize': 2000 * 1024 * 1024,  # 2 GB Telegram Bot limit
         'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'ios', 'mweb'],
-                'player_skip': ['webpage', 'configs'],
-            },
             'instagram': {
                 'direct_media': True,
             }
