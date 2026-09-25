@@ -38,11 +38,11 @@ async def main():
     os.makedirs(Config.DOWNLOAD_DIR, exist_ok=True)
     await run_web()
 
-    # Safe verification of TERABOX_COOKIE (without exposing secret value)
+    # Safe verification and auto-sync of TERABOX_COOKIE
     cookie = await db.get_terabox_cookie()
     if cookie:
-        logger.info("TERABOX_COOKIE configured: YES")
-        logger.info(f"TERABOX_COOKIE length: {len(cookie)}")
+        await db.set_setting("terabox_cookie", cookie)
+        logger.info(f"TERABOX_COOKIE configured: YES (Length: {len(cookie)})")
     else:
         logger.info("TERABOX_COOKIE configured: NO (Using community pool fallback)")
 

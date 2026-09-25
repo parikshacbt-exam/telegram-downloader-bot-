@@ -64,13 +64,11 @@ def extract_terabox_surl(url: str) -> str:
     return re.sub(r'[\.…\s]+$', '', surl).strip()
 
 def get_candidate_surls(surl: str) -> list[str]:
-    """Return candidates for shortcode (as-is, and with/without leading 1)"""
-    candidates = [surl]
+    """Return candidates for shortcode (prioritizes 1+surl for modern Terabox API)"""
     if surl.startswith("1") and len(surl) > 1:
-        candidates.append(surl[1:])
+        return [surl, surl[1:]]
     else:
-        candidates.append("1" + surl)
-    return candidates
+        return ["1" + surl, surl]
 
 def format_terabox_cookie(cookie_raw: str) -> str:
     """Safely format and sanitize Terabox cookie string without exposing secrets"""
@@ -79,13 +77,14 @@ def format_terabox_cookie(cookie_raw: str) -> str:
     cookie = cookie_raw.strip().strip("'\"").rstrip(".… ")
     if not cookie:
         return ""
+    # If the user pasted only the raw token (e.g. Y2Zi... without ndus= and no semicolon)
+    if "ndus=" not in cookie and ";" not in cookie and "=" not in cookie:
+        return f"ndus={cookie}; lang=en"
     if "ndus=" in cookie:
-        m = re.search(r'ndus=([^;]+)', cookie)
-        ndus_val = m.group(1).strip() if m else cookie.replace("ndus=", "").strip()
-    else:
-        ndus_val = cookie
-    ndus_val = ndus_val.strip().strip("'\"").rstrip(".… ")
-    return f"ndus={ndus_val}; lang=en" if ndus_val else ""
+        if "lang=" not in cookie:
+            cookie += "; lang=en"
+        return cookie
+    return cookie
 
 def extract_js_token(html: str) -> str | None:
     """Multi-pattern jsToken extractor from desktop & mobile WAP HTML responses"""
@@ -173,26 +172,6 @@ async def resolve_terabox_link(url: str) -> dict:
         headers["Cookie"] = cookie_str
 
     # =========================================================================
-    # Strategy 0: Official TeraboxDL Library (When cookie is configured)
-    # =========================================================================
-    if cookie_str:
-        try:
-            from TeraboxDL import TeraboxDL
-            tdl = TeraboxDL(cookie_str)
-            loop = asyncio.get_running_loop()
-            info = await asyncio.wait_for(loop.run_in_executor(None, tdl.get_file_info, url), timeout=15)
-            if info and not info.get("error") and info.get("download_link"):
-                logger.info(f"Resolved via TeraboxDL library: {info.get('file_name')}")
-                return {
-                    "success": True,
-                    "direct_url": info["download_link"],
-                    "filename": info.get("file_name", "video.mp4"),
-                    "size": int(info.get("size_bytes", 0))
-                }
-        except Exception as e:
-            logger.debug(f"TeraboxDL strategy error: {e}")
-
-    # =========================================================================
     # Strategy 1: Desktop API with extracted jsToken, dp-logid, and complete parameters
     # =========================================================================
     try:
@@ -258,7 +237,9 @@ async def resolve_terabox_link(url: str) -> dict:
                                             "filename": file_item.get("server_filename", "video.mp4"),
                                             "size": int(file_item.get("size", 0))
                                         }
-                                elif errno is not None:
+                                elif errno == 105:
+                                    last_errno = 105
+                                elif last_errno != 105 and errno is not None:
                                     last_errno = errno
                     except Exception as e:
                         logger.debug(f"Share list API error for {base_api} ({cand}): {e}")
@@ -379,7 +360,6 @@ async def resolve_terabox_link(url: str) -> dict:
     }
     try:
         async with aiohttp.ClientSession(headers=worker_headers) as session:
-            # Check mn-bots worker
             try:
                 mn_url = f"https://terabox-api.mn-bots.workers.dev/download?url={urllib.parse.quote(url)}"
                 async with session.get(mn_url, timeout=aiohttp.ClientTimeout(total=4)) as resp:
@@ -395,25 +375,6 @@ async def resolve_terabox_link(url: str) -> dict:
                             }
             except Exception:
                 pass
-
-            # Check tbx-proxy worker
-            for cand in candidate_surls:
-                try:
-                    tbx_url = f"https://tbx-proxy.shakir-ansarii075.workers.dev/?mode=resolve&surl={cand}"
-                    async with session.get(tbx_url, timeout=aiohttp.ClientTimeout(total=4)) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            if isinstance(data, dict) and data.get("data"):
-                                item = data["data"]
-                                if item.get("dlink"):
-                                    return {
-                                        "success": True,
-                                        "direct_url": item["dlink"],
-                                        "filename": item.get("name") or "video.mp4",
-                                        "size": int(item.get("size", 0))
-                                    }
-                except Exception:
-                    pass
     except Exception as e:
         logger.debug(f"Worker fallback error: {e}")
 

@@ -181,45 +181,80 @@ class Database:
     async def set_setting(self, key: str, value: str):
         """Save a global bot setting (e.g. terabox_cookie)"""
         if self.use_mongo:
-            await self.settings_col.update_one(
-                {"_id": key},
-                {"$set": {"value": value}},
-                upsert=True
-            )
+            try:
+                await self.settings_col.update_one(
+                    {"_id": key},
+                    {"$set": {"value": value}},
+                    upsert=True
+                )
+            except Exception as e:
+                logger.error(f"MongoDB set_setting error: {e}")
         else:
-            async with aiosqlite.connect(self.sqlite_db_path) as db:
-                await db.execute("""
-                    INSERT INTO settings (key, value) VALUES (?, ?)
-                    ON CONFLICT(key) DO UPDATE SET value=excluded.value
-                """, (key, value))
-                await db.commit()
+            try:
+                async with aiosqlite.connect(self.sqlite_db_path) as db:
+                    await db.execute("""
+                        CREATE TABLE IF NOT EXISTS settings (
+                            key TEXT PRIMARY KEY,
+                            value TEXT
+                        )
+                    """)
+                    await db.execute("""
+                        INSERT INTO settings (key, value) VALUES (?, ?)
+                        ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                    """, (key, value))
+                    await db.commit()
+            except Exception as e:
+                logger.error(f"SQLite set_setting error: {e}")
 
     async def get_setting(self, key: str, default: str = "") -> str:
         """Get a global bot setting"""
         if self.use_mongo:
-            doc = await self.settings_col.find_one({"_id": key})
-            return doc.get("value", default) if doc else default
+            try:
+                doc = await self.settings_col.find_one({"_id": key})
+                return doc.get("value", default) if doc else default
+            except Exception as e:
+                logger.error(f"MongoDB get_setting error: {e}")
+                return default
         else:
-            async with aiosqlite.connect(self.sqlite_db_path) as db:
-                async with db.execute("SELECT value FROM settings WHERE key = ?", (key,)) as cursor:
-                    row = await cursor.fetchone()
-                    return row[0] if row and row[0] is not None else default
+            try:
+                async with aiosqlite.connect(self.sqlite_db_path) as db:
+                    await db.execute("""
+                        CREATE TABLE IF NOT EXISTS settings (
+                            key TEXT PRIMARY KEY,
+                            value TEXT
+                        )
+                    """)
+                    async with db.execute("SELECT value FROM settings WHERE key = ?", (key,)) as cursor:
+                        row = await cursor.fetchone()
+                        return row[0] if row and row[0] is not None else default
+            except Exception as e:
+                logger.debug(f"SQLite get_setting error: {e}")
+                return default
 
     async def del_setting(self, key: str):
         """Delete a global bot setting"""
         if self.use_mongo:
-            await self.settings_col.delete_one({"_id": key})
+            try:
+                await self.settings_col.delete_one({"_id": key})
+            except Exception as e:
+                logger.error(f"MongoDB del_setting error: {e}")
         else:
-            async with aiosqlite.connect(self.sqlite_db_path) as db:
-                await db.execute("DELETE FROM settings WHERE key = ?", (key,))
-                await db.commit()
+            try:
+                async with aiosqlite.connect(self.sqlite_db_path) as db:
+                    await db.execute("DELETE FROM settings WHERE key = ?", (key,))
+                    await db.commit()
+            except Exception as e:
+                logger.error(f"SQLite del_setting error: {e}")
 
     async def get_terabox_cookie(self) -> str:
-        """Get the Terabox ndus cookie (from DB or config)"""
+        """Get the Terabox ndus cookie (prioritizes Render environment variable, then DB)"""
+        cfg_cookie = getattr(Config, "TERABOX_COOKIE", "").strip()
+        if cfg_cookie:
+            return cfg_cookie
         db_cookie = await self.get_setting("terabox_cookie", "")
         if db_cookie and db_cookie.strip():
             return db_cookie.strip()
-        return getattr(Config, "TERABOX_COOKIE", "").strip()
+        return ""
 
 db = Database()
 

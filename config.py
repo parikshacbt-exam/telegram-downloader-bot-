@@ -13,8 +13,14 @@ class Config:
     # Bot Token (from @BotFather)
     BOT_TOKEN = os.getenv("BOT_TOKEN", "")
     
-    # Admin User IDs (space or comma separated integers)
-    ADMIN_IDS_RAW = os.getenv("ADMIN_ID", "")
+    # Admin User IDs (supports ADMIN_ID, ADMIN_IDS, OWNER_ID, ADMIN)
+    ADMIN_IDS_RAW = (
+        os.getenv("ADMIN_ID") or
+        os.getenv("ADMIN_IDS") or
+        os.getenv("OWNER_ID") or
+        os.getenv("ADMIN") or
+        ""
+    ).strip()
     ADMINS = []
     if ADMIN_IDS_RAW:
         for x in ADMIN_IDS_RAW.replace(",", " ").split():
@@ -37,8 +43,19 @@ class Config:
     # Local download directory for processing files
     DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR", "downloads")
     
-    # Terabox Cookie (ndus token from browser for full 1GB+ downloads without login)
-    TERABOX_COOKIE = os.getenv("TERABOX_COOKIE", "").strip()
+    # Terabox Cookie (supports TERABOX_COOKIE, NDUS, ndus, COOKIE, COOKIES, TERABOX_NDUS, TERABOXCOOKIE, TERA_COOKIE)
+    TERABOX_COOKIE = (
+        os.getenv("TERABOX_COOKIE") or
+        os.getenv("NDUS") or
+        os.getenv("ndus") or
+        os.getenv("COOKIE") or
+        os.getenv("COOKIES") or
+        os.getenv("TERABOX_NDUS") or
+        os.getenv("TERABOXCOOKIE") or
+        os.getenv("TERA_COOKIE") or
+        os.getenv("TERA_NDUS") or
+        ""
+    ).strip()
 
     # Max File Size Limit (Telegram free bot limit is 2 GB)
     MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2 GB in bytes
